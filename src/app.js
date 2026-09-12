@@ -61,6 +61,8 @@
 
   let state = loadState();
   let frame = null;
+  let clockPickerMode = "jump";
+  let audioContext = null;
 
   function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   function getLog() { try { return JSON.parse(localStorage.getItem(EVENT_LOG_KEY)) || []; } catch { return []; } }
@@ -75,6 +77,15 @@
   }
   function toast(message) { const el = $("#toast"); el.textContent = message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 2200); }
   function formatMs(ms) { const total = Math.max(0, Math.ceil(ms / 1000)); return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`; }
+  function spokenDuration(ms) {
+    const total = Math.max(0, Math.ceil(ms / 1000));
+    const minutes = Math.floor(total / 60);
+    const seconds = total % 60;
+    const parts = [];
+    if (minutes) parts.push(`${minutes} ${minutes === 1 ? "minute" : "minutes"}`);
+    if (seconds) parts.push(`${seconds} ${seconds === 1 ? "second" : "seconds"}`);
+    return parts.join(" and ") || "zero seconds";
+  }
   function route(name) { stopFrame(); state.route = name; save(); render(); }
   function nav(active) {
     return `<nav class="bottom-nav" aria-label="Primary navigation">
@@ -147,10 +158,10 @@
   function matchRow(m) { return `<div class="list-row"><div><strong>${m.left} vs ${m.right}</strong><small>${m.time} · ${m.field}</small></div><span class="status">${m.status}</span></div>`; }
 
   function renderController() {
-    page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="reset-controller" aria-label="Reset current preview">↻</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p></header>
+    page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p></header>
       <section class="scorebug"><span class="team">${state.controller.inactiveMatch.leftTeam}</span><strong class="score">${state.controller.inactiveMatch.leftScore}</strong><span class="clock">${formatMs(state.controller.inactiveMatch.gameMs)}</span><strong class="score">${state.controller.inactiveMatch.rightScore}</strong><span class="team">${state.controller.inactiveMatch.rightTeam}</span></section>
       <section class="active-game"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong>${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong>${scoreForPhysical("right")}</strong></div></div></section>
-      <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">Ⅱ&nbsp; PAUSE</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
+      <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
       ${controllerMainButton()}${state.controller.phase === "POINT_STOPPED_WAITING_DECISION" ? decisionPanel() : ""}
       <section class="controller-card"><h2>NEXT UP</h2>${state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("")}</section>
       <div class="controller-nav"><button data-route="event-dashboard">DASHBOARD</button><button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button></div></div>`, null, "controller-screen");
@@ -159,7 +170,8 @@
   function scoreForPhysical(side) { const team = side === "left" ? state.controller.activeMatch.leftPhysicalTeam : state.controller.activeMatch.rightPhysicalTeam; return team === state.controller.activeMatch.leftTeam ? state.controller.activeMatch.leftScore : state.controller.activeMatch.rightScore; }
   function controllerMainButton() {
     const phase = state.controller.phase;
-    if (phase === "READY" || phase === "BREAK_PAUSED") return `<button class="main-command" data-action="start-break">▶ START BREAK</button>`;
+    if (phase === "READY") return `<button class="main-command" data-action="start-break">▶ START BREAK</button>`;
+    if (phase === "BREAK_PAUSED") return `<button class="main-command base" disabled><span>BREAK PAUSED</span><small>PRESS RESUME TO CONTINUE</small></button>`;
     if (phase === "POINT_LIVE" || phase === "GAME_PAUSED") return `<div class="base-pair"><button class="main-command base" data-action="base" data-side="left"><span>⚑ LEFT BASE</span><small>STOP GAME CLOCK</small></button><button class="main-command base" data-action="base" data-side="right"><span>RIGHT BASE ⚑</span><small>STOP GAME CLOCK</small></button></div>`;
     if (phase === "BREAK_RUNNING") return `<button class="main-command base" data-action="base" disabled><span>BREAK RUNNING</span><small style="display:block;font-size:8px">GAME STARTS AT 00:00</small></button>`;
     return `<button class="main-command base" disabled>POINT STOPPED</button>`;
@@ -188,7 +200,14 @@
       c.breakMs = remaining;
       const el = $("#breakClock"); if (el) { el.textContent = formatMs(remaining); el.classList.toggle("warning", remaining <= 10000 && remaining > 0); }
       announceCountdown(remaining);
-      if (remaining <= 0) { c.breakMs = 0; c.phase = "POINT_LIVE"; startAnchor("game", c.gameMs); logAction("GAME_CLOCK_AUTO_STARTED", { gameMs: c.gameMs }); renderController(); }
+      if (remaining <= 0) {
+        c.breakMs = 0;
+        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; tone(850, 1.7); speak("Game started"); }
+        c.phase = "POINT_LIVE";
+        startAnchor("game", c.gameMs);
+        logAction("GAME_CLOCK_AUTO_STARTED", { gameMs: c.gameMs });
+        renderController();
+      }
     } else if (c.activeAnchor.kind === "game") {
       c.gameMs = remaining; c.activeMatch.gameMs = remaining;
       const el = $("#gameClock"); if (el) el.textContent = formatMs(remaining);
@@ -200,14 +219,27 @@
     const seconds = Math.ceil(ms / 1000);
     if (seconds > 0 && seconds <= 10 && state.controller.lastAnnouncement !== seconds) {
       state.controller.lastAnnouncement = seconds;
-      tone(seconds === 1 ? 1200 : 850, seconds === 1 ? 1.7 : .08);
+      tone(850, .1);
     }
   }
+  function ensureAudio() {
+    try {
+      const Ctx = window.AudioContext || window.webkitAudioContext;
+      if (!Ctx) return null;
+      if (!audioContext) audioContext = new Ctx();
+      if (audioContext.state === "suspended") audioContext.resume();
+      return audioContext;
+    } catch { return null; }
+  }
   function tone(frequency, seconds) {
-    try { const Ctx = window.AudioContext || window.webkitAudioContext; const ctx = new Ctx(); const oscillator = ctx.createOscillator(); const gain = ctx.createGain(); oscillator.frequency.value = frequency; gain.gain.value = .34; oscillator.connect(gain); gain.connect(ctx.destination); oscillator.start(); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + seconds); oscillator.stop(ctx.currentTime + seconds); } catch { /* Audio is an enhancement. */ }
+    try { const ctx = ensureAudio(); if (!ctx) return; const oscillator = ctx.createOscillator(); const gain = ctx.createGain(); oscillator.frequency.value = frequency; gain.gain.value = .72; oscillator.connect(gain); gain.connect(ctx.destination); oscillator.start(); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + seconds); oscillator.stop(ctx.currentTime + seconds); } catch { /* Audio is an enhancement. */ }
   }
   function speak(text) { try { speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.rate = .86; utterance.volume = 1; speechSynthesis.speak(utterance); } catch { /* Audio is an enhancement. */ } }
-  function snapshotController() { state.controller.undoStack.push(clone({ activeMatch: state.controller.activeMatch, phase: state.controller.phase, gameMs: state.controller.gameMs, breakMs: state.controller.breakMs, pointHistory: state.controller.pointHistory })); state.controller.undoStack = state.controller.undoStack.slice(-20); }
+  function snapshotController() {
+    const { undoStack, ...current } = state.controller;
+    undoStack.push(clone(current));
+    state.controller.undoStack = undoStack.slice(-20);
+  }
   function pauseClock() {
     const c = state.controller;
     if (c.phase === "BREAK_RUNNING" && c.activeAnchor) { c.breakMs = anchoredRemaining(c.activeAnchor); c.phase = "BREAK_PAUSED"; c.activeAnchor = null; }
@@ -215,7 +247,10 @@
     else if (c.phase === "BREAK_PAUSED") { c.phase = "BREAK_RUNNING"; startAnchor("break", c.breakMs); }
     else if (c.phase === "GAME_PAUSED") { c.phase = "POINT_LIVE"; startAnchor("game", c.gameMs); }
     else return;
-    logAction(c.phase.endsWith("PAUSED") ? "CLOCK_PAUSED" : "CLOCK_RESUMED", { phase: c.phase }); speak(c.phase.endsWith("PAUSED") ? "Game stopped" : "Resume"); renderController();
+    const paused = c.phase.endsWith("PAUSED");
+    logAction(paused ? "CLOCK_PAUSED" : "CLOCK_RESUMED", { phase: c.phase });
+    if (paused) speak("Game stopped");
+    renderController();
   }
   function base(side = "left") {
     const c = state.controller; if (c.phase !== "POINT_LIVE") return;
@@ -237,15 +272,42 @@
     c.gameMs = c.activeMatch.gameMs;
     c.pendingBaseSide = null; c.breakMs = c.breakDefaultMs; c.phase = "BREAK_RUNNING"; c.lastAnnouncement = null; startAnchor("break", c.breakMs); logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { physicalTeam }); logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id }); renderController();
   }
-  function undo() { const snapshot = state.controller.undoStack.pop(); if (!snapshot) return toast("Nothing to undo."); Object.assign(state.controller, snapshot, { activeAnchor: null, pendingBaseSide: null }); logAction("UNDO"); renderController(); }
+  function undo() {
+    const undoStack = state.controller.undoStack;
+    const snapshot = undoStack.pop();
+    if (!snapshot) return toast("Nothing to undo.");
+    state.controller = { ...clone(snapshot), undoStack };
+    logAction("UNDO");
+    renderController();
+  }
 
   function showClockPicker() {
+    clockPickerMode = "jump";
+    renderClockPicker();
+    modal.showModal();
+  }
+  function renderClockPicker() {
     const options = [];
     for (let s = 5; s <= 60; s += 5) options.push(s);
     for (let s = 90; s <= 300; s += 30) options.push(s);
     for (let s = 360; s <= 1500; s += 60) options.push(s);
-    modalBody.innerHTML = `<h2>Set Clock To</h2><p class="muted">Set new default (${formatMs(state.controller.breakDefaultMs)})</p><div class="clock-options">${options.map(s => `<button type="button" data-clock-seconds="${s}">${formatMs(s * 1000)}</button>`).join("")}</div>`;
-    modal.showModal();
+    modalBody.innerHTML = `<h2>${clockPickerMode === "default" ? "Set New Default" : "Set Clock To"}</h2><button type="button" class="clock-default ${clockPickerMode === "default" ? "active" : ""}" data-action="set-default-mode">SET NEW DEFAULT (${formatMs(state.controller.breakDefaultMs)})</button><div class="clock-options">${options.map(s => `<button type="button" data-clock-seconds="${s}">${formatMs(s * 1000)}</button>`).join("")}</div>`;
+  }
+  function setBreakClock(ms) {
+    const c = state.controller;
+    const wasRunning = c.phase === "BREAK_RUNNING";
+    const wasPaused = c.phase === "BREAK_PAUSED";
+    c.breakMs = ms;
+    c.lastAnnouncement = null;
+    if (clockPickerMode === "default") c.breakDefaultMs = ms;
+    if (wasRunning) { c.phase = "BREAK_RUNNING"; startAnchor("break", ms); }
+    else if (wasPaused) { c.phase = "BREAK_PAUSED"; c.activeAnchor = null; }
+    else { c.phase = "READY"; c.activeAnchor = null; }
+    logAction(clockPickerMode === "default" ? "BREAK_DEFAULT_CHANGED" : "BREAK_CLOCK_JUMPED", { ms, running: wasRunning, paused: wasPaused });
+    ensureAudio();
+    speak(spokenDuration(ms));
+    modal.close();
+    renderController();
   }
   function showConnection() {
     modalBody.innerHTML = `<h2>Connect PBN Backend</h2><p class="muted">Store only the public base URL here. Configure the secret reference <strong>PBN_BACKEND_ACCESS_TOKEN</strong> in the engine after import.</p><div class="field"><label>Backend base URL</label><input id="connectionUrl" placeholder="https://api.example.com" value="${state.connection.baseUrl}"></div><button class="primary wide" style="margin-top:14px" type="button" data-action="save-connection">SAVE CONNECTION NAME</button>`;
@@ -260,7 +322,7 @@
     const button = event.target.closest("button"); if (!button) return;
     if (button.dataset.route) return route(button.dataset.route);
     if (button.dataset.clockSeconds) {
-      const ms = Number(button.dataset.clockSeconds) * 1000; state.controller.breakDefaultMs = ms; state.controller.breakMs = ms; state.controller.activeAnchor = null; state.controller.phase = "READY"; logAction("BREAK_DEFAULT_CHANGED", { ms }); speak(formatMs(ms).replace(":", " minutes ")); modal.close(); renderController(); return;
+      setBreakClock(Number(button.dataset.clockSeconds) * 1000); return;
     }
     const action = button.dataset.action;
     if (action === "demo-login") { state.authenticated = true; logAction("OFFLINE_DEMO_STARTED"); route("leagues"); }
@@ -270,7 +332,7 @@
     else if (action === "schedule-back") { state.scheduleDraft.step = Math.max(1, state.scheduleDraft.step - 1); save(); renderScheduleBuilder(); }
     else if (action === "schedule-next") { if (state.scheduleDraft.step < 4) state.scheduleDraft.step += 1; else { state.scheduleDraft.generated = true; state.scheduleDraft.version += 1; logAction("SCHEDULE_GENERATED", { version: state.scheduleDraft.version }); return route("master-schedule"); } save(); renderScheduleBuilder(); }
     else if (action === "publish-schedule") { state.scheduleDraft.published = true; state.event.status = "Published"; logAction("SCHEDULE_PUBLISHED", { version: state.scheduleDraft.version }); renderMasterSchedule(); }
-    else if (action === "start-break") { state.controller.phase = "BREAK_RUNNING"; state.controller.lastAnnouncement = null; startAnchor("break", state.controller.breakMs || state.controller.breakDefaultMs); logAction("BREAK_STARTED", { ms: state.controller.breakMs }); renderController(); }
+    else if (action === "start-break") { const ms = state.controller.breakMs || state.controller.breakDefaultMs; ensureAudio(); speak(spokenDuration(ms)); state.controller.phase = "BREAK_RUNNING"; state.controller.lastAnnouncement = null; startAnchor("break", ms); logAction("BREAK_STARTED", { ms }); renderController(); }
     else if (action === "pause") pauseClock();
     else if (action === "base") base(button.dataset.side || "left");
     else if (action === "approve-point") decide("approve");
@@ -278,8 +340,8 @@
     else if (action === "no-point") decide("no_point");
     else if (action === "undo") undo();
     else if (action === "set-break") showClockPicker();
+    else if (action === "set-default-mode") { clockPickerMode = "default"; renderClockPicker(); }
     else if (action === "score-plus" || action === "score-minus") { snapshotController(); const side = button.dataset.side; const team = side === "left" ? state.controller.activeMatch.leftPhysicalTeam : state.controller.activeMatch.rightPhysicalTeam; const key = team === state.controller.activeMatch.leftTeam ? "leftScore" : "rightScore"; state.controller.activeMatch[key] = Math.max(0, state.controller.activeMatch[key] + (action === "score-plus" ? 1 : -1)); logAction("MANUAL_SCORE_CORRECTION", { side, delta: action === "score-plus" ? 1 : -1 }); renderController(); }
-    else if (action === "reset-controller") { state.controller = clone(defaultState.controller); logAction("CONTROLLER_PREVIEW_RESET"); renderController(); }
     else if (action === "export-log") exportLog();
     else if (action === "reset-all") { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(EVENT_LOG_KEY); state = clone(defaultState); render(); }
     else if (action === "finalize-playoffs") toast("Qualifying is still active. Projection was not finalized.");
