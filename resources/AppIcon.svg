@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="28%" r="80%">
+      <stop offset="0" stop-color="#25222e"/>
+      <stop offset="0.45" stop-color="#0d0c13"/>
+      <stop offset="1" stop-color="#030305"/>
+    </radialGradient>
+    <linearGradient id="mark" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dfb0ff"/>
+      <stop offset="0.5" stop-color="#a64ff2"/>
+      <stop offset="1" stop-color="#67309a"/>
+    </linearGradient>
+  </defs>
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+  <path d="M150 512H874" stroke="#813abd" stroke-width="8" opacity="0.7"/>
+  <path d="M215 720L340 300M809 720L684 300" stroke="#5c2b85" stroke-width="12" opacity="0.55"/>
+  <text x="512" y="555" text-anchor="middle" fill="url(#mark)" stroke="#efddff" stroke-width="3" font-family="Arial,Helvetica,sans-serif" font-size="280" font-weight="900" font-style="italic" letter-spacing="-28">PBN</text>
+  <text x="512" y="670" text-anchor="middle" fill="#f6f3f8" font-family="Arial,Helvetica,sans-serif" font-size="58" font-weight="900" letter-spacing="8">GAME TIME</text>
+</svg>

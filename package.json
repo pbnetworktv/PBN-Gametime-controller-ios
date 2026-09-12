@@ -1,0 +1,23 @@
+{
+  "name": "pbn-gametime-controller-ios",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "icon": "node scripts/generate-icon.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "ios:add": "npm run build && npx cap add ios",
+    "ios:sync": "npm run build && npx cap sync ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "^8.5.0",
+    "@capacitor/ios": "^8.5.0"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.5.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

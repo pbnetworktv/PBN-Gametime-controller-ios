@@ -1,0 +1,9 @@
+{
+  "appId": "tv.pbnetwork.gametimecontroller",
+  "appName": "PBN Game Time Controller",
+  "webDir": "www",
+  "ios": {
+    "contentInset": "always",
+    "preferredContentMode": "mobile"
+  }
+}

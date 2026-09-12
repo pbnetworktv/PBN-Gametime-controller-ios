@@ -1,0 +1,12 @@
+node_modules/
+www/
+ios/
+.DS_Store
+*.xcarchive
+*.ipa
+*.p8
+*.p12
+*.mobileprovision
+.env
+.env.*
+npm-debug.log*
