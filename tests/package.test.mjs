@@ -25,7 +25,9 @@ test("live controls and correction semantics are distinct", () => {
 test("break clock supports announcements, countdown cues, and separate default mode", () => {
   assert.match(app, /spokenDuration/);
   assert.match(app, /speak\("Game started"\)/);
-  assert.match(app, /tone\(850, 1\.7\)/);
+  assert.match(app, /function horn/);
+  assert.match(app, /\[30, 20, 10\]/);
+  assert.match(app, /tone\(1450, \.09\)/);
   assert.match(app, /BREAK_CLOCK_JUMPED/);
   assert.match(app, /BREAK_DEFAULT_CHANGED/);
   assert.match(app, /set-default-mode/);
@@ -53,4 +55,19 @@ test("home is scrimmage-first and full events use a guided readiness path", () =
   assert.match(app, /function eventSetupSteps/);
   assert.match(app, /function startScrimmage/);
   assert.match(app, /function runEvent/);
+});
+
+test("scrimmages support explicit single and split deck behavior", () => {
+  assert.match(app, /Single Deck \(2 teams\)/);
+  assert.match(app, /Split Deck \(4 teams\)/);
+  assert.match(app, /deckStyle === "split"/);
+  assert.match(app, /SINGLE DECK SCRIMMAGE/);
+  assert.match(app, /leftPhysicalTeamId/);
+  assert.match(app, /rightPhysicalTeamId/);
+});
+
+test("base decisions award the team opposite the hit base", () => {
+  assert.match(app, /const scoringSide = side === "left" \? "right" : "left"/);
+  assert.match(app, /addPoint\(scoringTeamId\)/);
+  assert.match(app, /ACTIVE_INACTIVE_SWAPPED/);
 });

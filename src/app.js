@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "pbn_game_time_controller_v2";
+  const STORAGE_KEY = "pbn_game_time_controller_v3";
   const EVENT_LOG_KEY = "pbn_game_time_action_log_v1";
   const $ = (selector) => document.querySelector(selector);
   const app = $("#app");
@@ -11,12 +11,12 @@
   const clone = (value) => JSON.parse(JSON.stringify(value));
 
   const defaultState = {
-    version: 2,
+    version: 3,
     authenticated: false,
     route: "login",
     connection: { configured: false, name: "PBN Backend", baseUrl: "" },
     operator: { name: "Demo Operator", role: "Event Director" },
-    session: { active: false, type: null, label: null, format: null },
+    session: { active: false, type: null, label: null, format: null, pointLimit: null, deckStyle: null },
     league: { id: "league-demo", name: "PBN Demo League", season: "2026 Season" },
     event: { id: "event-demo", name: "Fall Championship", date: "Sep 19–20, 2026", venue: "PBN Field Complex", format: "Race-to preset", status: "Draft" },
     divisions: [{ id: "d1", name: "Open X-Ball", teams: 8, format: "Race-to-4" }, { id: "d2", name: "3v3 Novice", teams: 6, format: "Race-to-2" }],
@@ -40,8 +40,8 @@
       breakMs: 120000,
       breakDefaultMs: 120000,
       activeAnchor: null,
-      activeMatch: { id: "m1", leftTeam: "RED LEGION", rightTeam: "DAMAGE", leftScore: 0, rightScore: 0, leftPhysicalTeam: "RED LEGION", rightPhysicalTeam: "DAMAGE", gameMs: 600000 },
-      inactiveMatch: { id: "m2", leftTeam: "AFTERMATH", rightTeam: "DYNASTY", leftScore: 0, rightScore: 0, leftPhysicalTeam: "AFTERMATH", rightPhysicalTeam: "DYNASTY", gameMs: 600000 },
+      activeMatch: { id: "m1", leftTeamId: "m1-left", rightTeamId: "m1-right", leftTeam: "RED LEGION", rightTeam: "DAMAGE", leftScore: 0, rightScore: 0, leftPhysicalTeamId: "m1-left", rightPhysicalTeamId: "m1-right", leftPhysicalTeam: "RED LEGION", rightPhysicalTeam: "DAMAGE", gameMs: 600000 },
+      inactiveMatch: { id: "m2", leftTeamId: "m2-left", rightTeamId: "m2-right", leftTeam: "AFTERMATH", rightTeam: "DYNASTY", leftScore: 0, rightScore: 0, leftPhysicalTeamId: "m2-left", rightPhysicalTeamId: "m2-right", leftPhysicalTeam: "AFTERMATH", rightPhysicalTeam: "DYNASTY", gameMs: 600000 },
       pendingBaseSide: null,
       pointHistory: [],
       undoStack: [],
@@ -55,7 +55,7 @@
   function loadState() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (!saved || saved.version !== 2) return clone(defaultState);
+      if (!saved || saved.version !== 3) return clone(defaultState);
       return { ...clone(defaultState), ...saved, controller: { ...clone(defaultState.controller), ...(saved.controller || {}) } };
     } catch { return clone(defaultState); }
   }
@@ -185,16 +185,25 @@
   function matchRow(m) { return `<div class="list-row"><div><strong>${m.left} vs ${m.right}</strong><small>${m.time} · ${m.field}</small></div><span class="status">${m.status}</span></div>`; }
 
   function renderController() {
+    const singleDeck = state.session?.type === "scrimmage" && state.session.deckStyle !== "split";
+    const splitScrimmage = state.session?.type === "scrimmage" && state.session.deckStyle === "split";
+    const nextRows = splitScrimmage
+      ? `<div class="next-row"><span>${state.controller.inactiveMatch.leftTeam}</span><b>VS</b><span>${state.controller.inactiveMatch.rightTeam}</span><span>ON DECK</span></div>`
+      : state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("");
     page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p></header>
-      <section class="scorebug"><span class="team">${state.controller.inactiveMatch.leftTeam}</span><strong class="score">${state.controller.inactiveMatch.leftScore}</strong><span class="clock">${formatMs(state.controller.inactiveMatch.gameMs)}</span><strong class="score">${state.controller.inactiveMatch.rightScore}</strong><span class="team">${state.controller.inactiveMatch.rightTeam}</span></section>
+      ${singleDeck ? `<div class="controller-mode">SINGLE DECK SCRIMMAGE</div>` : `<section class="scorebug"><span class="team">${state.controller.inactiveMatch.leftTeam}</span><strong class="score">${state.controller.inactiveMatch.leftScore}</strong><span class="clock">${formatMs(state.controller.inactiveMatch.gameMs)}</span><strong class="score">${state.controller.inactiveMatch.rightScore}</strong><span class="team">${state.controller.inactiveMatch.rightTeam}</span></section>`}
       <section class="active-game"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong>${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong>${scoreForPhysical("right")}</strong></div></div></section>
       <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
       ${controllerMainButton()}${state.controller.phase === "POINT_STOPPED_WAITING_DECISION" ? decisionPanel() : ""}
-      <section class="controller-card"><h2>NEXT UP</h2>${state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("")}</section>
-      <div class="controller-nav"><button data-route="command-home">HOME</button><button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button></div></div>`, null, "controller-screen");
+      ${singleDeck ? "" : `<section class="controller-card"><h2>NEXT UP</h2>${nextRows}</section>`}
+      <div class="controller-nav"><button data-route="command-home">HOME</button>${state.session?.type === "event" ? `<button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button>` : ""}</div></div>`, null, "controller-screen");
     startFrame();
   }
-  function scoreForPhysical(side) { const team = side === "left" ? state.controller.activeMatch.leftPhysicalTeam : state.controller.activeMatch.rightPhysicalTeam; return team === state.controller.activeMatch.leftTeam ? state.controller.activeMatch.leftScore : state.controller.activeMatch.rightScore; }
+  function scoreForPhysical(side) {
+    const match = state.controller.activeMatch;
+    const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId;
+    return teamId === match.leftTeamId ? match.leftScore : match.rightScore;
+  }
   function controllerMainButton() {
     const phase = state.controller.phase;
     if (phase === "READY") return `<button class="main-command" data-action="start-break">▶ START BREAK</button>`;
@@ -229,7 +238,7 @@
       announceCountdown(remaining);
       if (remaining <= 0) {
         c.breakMs = 0;
-        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; tone(850, 1.7); speak("Game started"); }
+        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; horn(); speak("Game started"); }
         c.phase = "POINT_LIVE";
         startAnchor("game", c.gameMs);
         logAction("GAME_CLOCK_AUTO_STARTED", { gameMs: c.gameMs });
@@ -244,9 +253,15 @@
   }
   function announceCountdown(ms) {
     const seconds = Math.ceil(ms / 1000);
+    if ([30, 20, 10].includes(seconds) && state.controller.lastAnnouncement !== seconds) {
+      state.controller.lastAnnouncement = seconds;
+      speak(`${seconds} seconds`);
+      if (seconds === 10) tone(1450, .09);
+      return;
+    }
     if (seconds > 0 && seconds <= 10 && state.controller.lastAnnouncement !== seconds) {
       state.controller.lastAnnouncement = seconds;
-      tone(850, .1);
+      tone(1450, .09);
     }
   }
   function ensureAudio() {
@@ -259,7 +274,15 @@
     } catch { return null; }
   }
   function tone(frequency, seconds) {
-    try { const ctx = ensureAudio(); if (!ctx) return; const oscillator = ctx.createOscillator(); const gain = ctx.createGain(); oscillator.frequency.value = frequency; gain.gain.value = .72; oscillator.connect(gain); gain.connect(ctx.destination); oscillator.start(); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + seconds); oscillator.stop(ctx.currentTime + seconds); } catch { /* Audio is an enhancement. */ }
+    try { const ctx = ensureAudio(); if (!ctx) return; const oscillator = ctx.createOscillator(); const gain = ctx.createGain(); oscillator.type = "sine"; oscillator.frequency.value = frequency; gain.gain.value = .72; oscillator.connect(gain); gain.connect(ctx.destination); oscillator.start(); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + seconds); oscillator.stop(ctx.currentTime + seconds); } catch { /* Audio is an enhancement. */ }
+  }
+  function horn() {
+    try {
+      const ctx = ensureAudio(); if (!ctx) return;
+      const gain = ctx.createGain(); gain.gain.value = .68; gain.connect(ctx.destination);
+      [440, 554].forEach((frequency) => { const oscillator = ctx.createOscillator(); oscillator.type = "sawtooth"; oscillator.frequency.value = frequency; oscillator.connect(gain); oscillator.start(); oscillator.stop(ctx.currentTime + 1.7); });
+      gain.gain.setValueAtTime(.68, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + 1.7);
+    } catch { /* Audio is an enhancement. */ }
   }
   function speak(text) { try { speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.rate = .86; utterance.volume = 1; speechSynthesis.speak(utterance); } catch { /* Audio is an enhancement. */ } }
   function snapshotController() {
@@ -285,19 +308,33 @@
   }
   function decide(kind) {
     const c = state.controller; if (c.phase !== "POINT_STOPPED_WAITING_DECISION") return; snapshotController();
-    const side = c.pendingBaseSide; const physicalTeam = side === "left" ? c.activeMatch.leftPhysicalTeam : c.activeMatch.rightPhysicalTeam;
+    const side = c.pendingBaseSide;
+    const scoringSide = side === "left" ? "right" : "left";
+    const scoringTeamId = scoringSide === "left" ? c.activeMatch.leftPhysicalTeamId : c.activeMatch.rightPhysicalTeamId;
+    const scoringTeam = scoringSide === "left" ? c.activeMatch.leftPhysicalTeam : c.activeMatch.rightPhysicalTeam;
+    const reversedTeamId = scoringSide === "left" ? c.activeMatch.rightPhysicalTeamId : c.activeMatch.leftPhysicalTeamId;
+    const addPoint = (teamId) => {
+      if (teamId === c.activeMatch.leftTeamId) c.activeMatch.leftScore += 1;
+      else c.activeMatch.rightScore += 1;
+    };
     if (kind === "approve") {
-      if (physicalTeam === c.activeMatch.leftTeam) c.activeMatch.leftScore += 1; else c.activeMatch.rightScore += 1;
+      addPoint(scoringTeamId);
+    }
+    if (kind === "reverse") { addPoint(reversedTeamId); speak("Point reversed"); }
+    if (kind !== "no_point") {
+      [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
       [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
     }
-    if (kind === "reverse") { if (physicalTeam === c.activeMatch.leftTeam) c.activeMatch.rightScore += 1; else c.activeMatch.leftScore += 1; speak("Point reversed"); }
-    c.pointHistory.push({ at: now(), decision: kind, baseSide: side, physicalTeam, gameMs: c.gameMs });
+    c.pointHistory.push({ at: now(), decision: kind, baseSide: side, scoringTeamId, scoringTeam, gameMs: c.gameMs });
     c.activeMatch.gameMs = c.gameMs;
-    const completedMatch = c.activeMatch;
-    c.activeMatch = c.inactiveMatch;
-    c.inactiveMatch = completedMatch;
-    c.gameMs = c.activeMatch.gameMs;
-    c.pendingBaseSide = null; c.breakMs = c.breakDefaultMs; c.phase = "BREAK_RUNNING"; c.lastAnnouncement = null; startAnchor("break", c.breakMs); logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { physicalTeam }); logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id }); renderController();
+    if (state.session?.deckStyle === "split") {
+      const completedMatch = c.activeMatch;
+      c.activeMatch = c.inactiveMatch;
+      c.inactiveMatch = completedMatch;
+      c.gameMs = c.activeMatch.gameMs;
+      logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id });
+    }
+    c.pendingBaseSide = null; c.breakMs = c.breakDefaultMs; c.phase = "BREAK_RUNNING"; c.lastAnnouncement = null; startAnchor("break", c.breakMs); logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { scoringTeamId, scoringTeam, baseSide: side }); renderController();
   }
   function undo() {
     const undoStack = state.controller.undoStack;
@@ -341,19 +378,31 @@
     modal.showModal();
   }
   function showScrimmageSetup() {
-    modalBody.innerHTML = `<h2>Start a Scrimmage</h2><p class="muted">One quick screen, then the controller opens.</p><div class="field-grid"><div class="field"><label>Format</label><select id="scrimmageFormat"><option>Race-to-3</option><option>Race-to-4</option><option>Uncapped points</option></select></div><div class="field"><label>Left team</label><input id="scrimmageLeft" value="TEAM 1" maxlength="24"></div><div class="field"><label>Right team</label><input id="scrimmageRight" value="TEAM 2" maxlength="24"></div></div><button class="primary wide" style="margin-top:16px" type="button" data-action="start-scrimmage">OPEN CONTROLLER</button>`;
+    modalBody.innerHTML = `<h2>Start a Scrimmage</h2><p class="muted">Single Deck is the simplest two-team setup. Choose Split Deck when four teams are rotating.</p><div class="field-grid"><div class="field"><label>Deck style</label><select id="scrimmageDeck"><option value="single">Single Deck (2 teams)</option><option value="split">Split Deck (4 teams)</option></select></div><div class="field"><label>Scoring format</label><select id="scrimmageFormat"><option value="race-to">Race-to</option><option value="uncapped">Uncapped points</option></select></div><div class="field"><label>Point limit</label><select id="scrimmagePointLimit">${[1,2,3,4,5,6,7].map(n => `<option value="${n}" ${n === 3 ? "selected" : ""}>${n} points</option>`).join("")}</select></div><div class="field"><label>Left team</label><input id="scrimmageLeft" value="TEAM 1" maxlength="24"></div><div class="field"><label>Right team</label><input id="scrimmageRight" value="TEAM 2" maxlength="24"></div><div id="splitDeckTeams" class="field-grid hidden"><div class="field"><label>Second match — left team</label><input id="scrimmageNextLeft" value="TEAM 3" maxlength="24"></div><div class="field"><label>Second match — right team</label><input id="scrimmageNextRight" value="TEAM 4" maxlength="24"></div></div></div><button class="primary wide" style="margin-top:16px" type="button" data-action="start-scrimmage">OPEN CONTROLLER</button>`;
     modal.showModal();
+  }
+  function teamId(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2,7)}`; }
+  function scrimmageMatch(id, left, right) {
+    const leftTeamId = teamId(`${id}-left`);
+    const rightTeamId = teamId(`${id}-right`);
+    return { id, leftTeamId, rightTeamId, leftTeam: left, rightTeam: right, leftScore: 0, rightScore: 0, leftPhysicalTeamId: leftTeamId, rightPhysicalTeamId: rightTeamId, leftPhysicalTeam: left, rightPhysicalTeam: right, gameMs: 600000 };
   }
   function startScrimmage() {
     const left = $("#scrimmageLeft").value.trim() || "TEAM 1";
     const right = $("#scrimmageRight").value.trim() || "TEAM 2";
     const format = $("#scrimmageFormat").value;
+    const pointLimit = Number($("#scrimmagePointLimit").value);
+    const deckStyle = $("#scrimmageDeck").value;
     const c = clone(defaultState.controller);
-    c.activeMatch = { ...c.activeMatch, id: `scrimmage-${Date.now()}`, leftTeam: left, rightTeam: right, leftPhysicalTeam: left, rightPhysicalTeam: right };
-    c.inactiveMatch = { ...c.inactiveMatch, id: `scrimmage-next-${Date.now()}`, leftTeam: "NEXT TEAM", rightTeam: "NEXT TEAM", leftPhysicalTeam: "NEXT TEAM", rightPhysicalTeam: "NEXT TEAM" };
+    c.activeMatch = scrimmageMatch(`scrimmage-${Date.now()}`, left, right);
+    if (deckStyle === "split") {
+      const nextLeft = $("#scrimmageNextLeft").value.trim() || "TEAM 3";
+      const nextRight = $("#scrimmageNextRight").value.trim() || "TEAM 4";
+      c.inactiveMatch = scrimmageMatch(`scrimmage-next-${Date.now()}`, nextLeft, nextRight);
+    } else c.inactiveMatch = null;
     state.controller = c;
-    state.session = { active: true, type: "scrimmage", label: `${left} vs ${right}`, format };
-    logAction("SCRIMMAGE_STARTED", { left, right, format });
+    state.session = { active: true, type: "scrimmage", label: `${left} vs ${right}`, format, pointLimit, deckStyle };
+    logAction("SCRIMMAGE_STARTED", { left, right, format, pointLimit, deckStyle });
     modal.close();
     route("live-controller");
   }
@@ -362,11 +411,11 @@
       const c = clone(defaultState.controller);
       const active = state.schedule[0];
       const inactive = state.schedule[1];
-      c.activeMatch = { ...c.activeMatch, id: active.id, leftTeam: active.left, rightTeam: active.right, leftPhysicalTeam: active.left, rightPhysicalTeam: active.right };
-      c.inactiveMatch = { ...c.inactiveMatch, id: inactive.id, leftTeam: inactive.left, rightTeam: inactive.right, leftPhysicalTeam: inactive.left, rightPhysicalTeam: inactive.right };
+      c.activeMatch = scrimmageMatch(active.id, active.left, active.right);
+      c.inactiveMatch = scrimmageMatch(inactive.id, inactive.left, inactive.right);
       state.controller = c;
     }
-    state.session = { active: true, type: "event", label: state.event.name, format: state.event.format };
+    state.session = { active: true, type: "event", label: state.event.name, format: state.event.format, pointLimit: null, deckStyle: "split" };
     logAction("EVENT_CONTROL_OPENED", { eventId: state.event.id });
     route("live-controller");
   }
@@ -401,11 +450,16 @@
     else if (action === "undo") undo();
     else if (action === "set-break") showClockPicker();
     else if (action === "set-default-mode") { clockPickerMode = "default"; renderClockPicker(); }
-    else if (action === "score-plus" || action === "score-minus") { snapshotController(); const side = button.dataset.side; const team = side === "left" ? state.controller.activeMatch.leftPhysicalTeam : state.controller.activeMatch.rightPhysicalTeam; const key = team === state.controller.activeMatch.leftTeam ? "leftScore" : "rightScore"; state.controller.activeMatch[key] = Math.max(0, state.controller.activeMatch[key] + (action === "score-plus" ? 1 : -1)); logAction("MANUAL_SCORE_CORRECTION", { side, delta: action === "score-plus" ? 1 : -1 }); renderController(); }
+    else if (action === "score-plus" || action === "score-minus") { snapshotController(); const side = button.dataset.side; const match = state.controller.activeMatch; const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId; const key = teamId === match.leftTeamId ? "leftScore" : "rightScore"; match[key] = Math.max(0, match[key] + (action === "score-plus" ? 1 : -1)); logAction("MANUAL_SCORE_CORRECTION", { side, teamId, delta: action === "score-plus" ? 1 : -1 }); renderController(); }
     else if (action === "export-log") exportLog();
     else if (action === "reset-all") { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(EVENT_LOG_KEY); state = clone(defaultState); render(); }
     else if (action === "finalize-playoffs") toast("Qualifying is still active. Projection was not finalized.");
     else if (action === "team-detail") toast("Roster details belong to the future player app.");
+  });
+
+  document.addEventListener("change", (event) => {
+    if (event.target.id === "scrimmageDeck") $("#splitDeckTeams")?.classList.toggle("hidden", event.target.value !== "split");
+    if (event.target.id === "scrimmageFormat") $("#scrimmagePointLimit")?.closest(".field")?.classList.toggle("hidden", event.target.value === "uncapped");
   });
 
   state.activity = getLog().slice(-30).reverse();
