@@ -38,10 +38,19 @@ test("pause control exposes resume state and viewport zoom is disabled", () => {
 
 test("application exposes all first-iteration routes", () => {
   const routes = [
-    "login", "leagues", "league-home", "event-dashboard", "event-settings",
+    "login", "command-home", "leagues", "league-home", "event-dashboard", "event-settings",
     "schedule-builder", "master-schedule", "live-controller", "standings",
     "playoffs", "teams", "divisions", "fields", "staff", "activity",
     "publishing", "settings"
   ];
   for (const route of routes) assert.match(app, new RegExp(`"${route}"`));
+});
+
+test("home is scrimmage-first and full events use a guided readiness path", () => {
+  assert.match(app, /START A SCRIMMAGE/);
+  assert.match(app, /SET UP A FULL EVENT/);
+  assert.match(app, /CONTINUE WHERE I LEFT OFF/);
+  assert.match(app, /function eventSetupSteps/);
+  assert.match(app, /function startScrimmage/);
+  assert.match(app, /function runEvent/);
 });

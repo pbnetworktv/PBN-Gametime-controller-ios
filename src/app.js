@@ -1,7 +1,7 @@
 (() => {
   "use strict";
 
-  const STORAGE_KEY = "pbn_game_time_controller_v1";
+  const STORAGE_KEY = "pbn_game_time_controller_v2";
   const EVENT_LOG_KEY = "pbn_game_time_action_log_v1";
   const $ = (selector) => document.querySelector(selector);
   const app = $("#app");
@@ -11,11 +11,12 @@
   const clone = (value) => JSON.parse(JSON.stringify(value));
 
   const defaultState = {
-    version: 1,
+    version: 2,
     authenticated: false,
     route: "login",
     connection: { configured: false, name: "PBN Backend", baseUrl: "" },
     operator: { name: "Demo Operator", role: "Event Director" },
+    session: { active: false, type: null, label: null, format: null },
     league: { id: "league-demo", name: "PBN Demo League", season: "2026 Season" },
     event: { id: "event-demo", name: "Fall Championship", date: "Sep 19–20, 2026", venue: "PBN Field Complex", format: "Race-to preset", status: "Draft" },
     divisions: [{ id: "d1", name: "Open X-Ball", teams: 8, format: "Race-to-4" }, { id: "d2", name: "3v3 Novice", teams: 6, format: "Race-to-2" }],
@@ -54,7 +55,7 @@
   function loadState() {
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
-      if (!saved || saved.version !== 1) return clone(defaultState);
+      if (!saved || saved.version !== 2) return clone(defaultState);
       return { ...clone(defaultState), ...saved, controller: { ...clone(defaultState.controller), ...(saved.controller || {}) } };
     } catch { return clone(defaultState); }
   }
@@ -89,7 +90,7 @@
   function route(name) { stopFrame(); state.route = name; save(); render(); }
   function nav(active) {
     return `<nav class="bottom-nav" aria-label="Primary navigation">
-      <button data-route="event-dashboard" class="${active === "event-dashboard" ? "active" : ""}"><span>⌂</span>Dashboard</button>
+      <button data-route="command-home" class="${active === "command-home" ? "active" : ""}"><span>⌂</span>Home</button>
       <button data-route="master-schedule" class="${active === "master-schedule" ? "active" : ""}"><span>▤</span>Schedule</button>
       <button data-route="live-controller" class="${active === "live-controller" ? "active" : ""}"><span>◉</span>Control</button>
       <button data-route="settings" class="${active === "settings" ? "active" : ""}"><span>⚙</span>Settings</button>
@@ -100,6 +101,7 @@
 
   const pageDefinitions = {
     "login": renderLogin,
+    "command-home": renderCommandHome,
     "leagues": renderLeagues,
     "league-home": renderLeagueHome,
     "event-dashboard": renderDashboard,
@@ -125,6 +127,15 @@
   function renderLogin() {
     page(`<div style="padding-top:18vh;text-align:center"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p><section class="card hero" style="text-align:left;margin-top:42px"><span class="eyebrow">OPERATOR ACCESS</span><h2>Run the event.</h2><p>Sign in when the PBN backend is ready, or enter the safe offline demo now.</p><button class="primary wide" data-action="demo-login">ENTER OFFLINE DEMO</button><button class="secondary wide" style="margin-top:10px" data-action="connection">CONNECT PBN BACKEND</button></section></div>`, null);
   }
+  function renderCommandHome() {
+    const session = state.session || defaultState.session;
+    page(`<div class="command-head"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p></div>
+      ${session.active ? `<section class="active-session"><span class="live-dot"></span><div><span class="eyebrow">ACTIVE ${session.type === "scrimmage" ? "SCRIMMAGE" : "EVENT"}</span><h2>${session.label || "Controller session"}</h2><p>Your clock and scores are saved on this device.</p></div><button class="primary" data-route="live-controller">RETURN TO CONTROLLER</button></section>` : `
+      <section class="command-intro"><span class="eyebrow">EVENT COMMAND</span><h1>What are you running?</h1><p>Choose the fast scrimmage setup or prepare a complete scheduled event.</p></section>
+      <button class="command-choice quick" data-action="open-scrimmage"><span class="choice-icon">▶</span><span><strong>START A SCRIMMAGE</strong><small>Pick a format, name the teams, and start playing</small></span><b>›</b></button>
+      <button class="command-choice" data-route="event-dashboard"><span class="choice-icon">▤</span><span><strong>SET UP A FULL EVENT</strong><small>Schedule, divisions, fields, staff, and publishing</small></span><b>›</b></button>`}
+      <section class="recent-event"><div class="section-title"><h2>Planned event</h2><span class="status warn">${state.event.status.toUpperCase()}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${state.league.name}</span><strong>${state.event.name}</strong><small>${state.event.date} · ${state.event.venue}</small></div><b>CONTINUE ›</b></button></section>`, "command-home", "command-screen");
+  }
   function renderLeagues() {
     page(`${topbar("My Leagues", "login")}<section class="card hero"><span class="eyebrow">CURRENT ORGANIZATION</span><h2>${state.league.name}</h2><p>${state.league.season} · one event ready for testing</p><button class="primary wide" data-route="league-home">OPEN LEAGUE</button></section><div class="section-title"><h2>Other leagues</h2></div><div class="card empty">Connect the PBN backend to load additional organizations.</div>`, null);
   }
@@ -133,10 +144,26 @@
   }
   function renderDashboard() {
     const next = state.schedule[0];
-    page(`${topbar("Event Dashboard", "league-home")}<section class="card hero"><span class="eyebrow">${state.event.status} · ${state.event.date}</span><h2>${state.event.name}</h2><p>${state.event.venue}</p><button class="primary wide" data-route="live-controller">OPEN LIVE CONTROLLER</button></section>
-      <div class="section-title"><h2>Up next</h2><span class="status">${next.time}</span></div><button class="list-row" data-route="live-controller"><div><strong>${next.left} vs ${next.right}</strong><small>${next.field} · ${next.status}</small></div><span>→</span></button>
-      <div class="section-title"><h2>Manage event</h2></div><div class="grid">
-      ${menu("schedule-builder", "▤", "Build Schedule", "Generate, review and publish")}${menu("master-schedule", "5", "Master Schedule", "All fields and matches")}${menu("standings", "4", "Scores & Standings", "Live records and ranking")}${menu("playoffs", "⌁", "Playoffs", "Projected and official bracket")}${menu("teams", state.teams.length, "Teams", "Event entries")}${menu("divisions", state.divisions.length, "Divisions", "Formats and phases")}${menu("fields", state.fields.length, "Fields & Pits", "Field assignments")}${menu("staff", state.staff.length, "Staff", "Roles and crews")}${menu("publishing", "↗", "Publishing", "Public schedule and results")}${menu("activity", getLog().length, "Activity Log", "Offline audit trail")}${menu("event-settings", "⚙", "Event Settings", "Event rules and details")}${menu("settings", "●", "Recovery", "Connection and diagnostics")}</div>`, "event-dashboard");
+    const steps = eventSetupSteps();
+    const complete = steps.filter(step => step.done).length;
+    const nextStep = steps.find(step => !step.done) || steps[steps.length - 1];
+    page(`${topbar("Event Command", "command-home")}<section class="event-command-hero"><div><span class="eyebrow">${state.event.status} · ${state.event.date}</span><h2>${state.event.name}</h2><p>${state.event.venue}</p></div><button class="run-event" data-action="run-event">▶ RUN EVENT</button></section>
+      <div class="section-title"><h2>Up next</h2><span class="status">${next.time}</span></div><button class="next-match" data-action="run-event"><div><strong>${next.left} vs ${next.right}</strong><small>${next.field} · ${next.status}</small></div><span>OPEN CONTROLLER ›</span></button>
+      <div class="readiness-head"><div><span class="eyebrow">EVENT READINESS</span><h2>${complete} of ${steps.length} complete</h2></div><strong>${Math.round(complete / steps.length * 100)}%</strong></div><div class="readiness-bar"><span style="width:${complete / steps.length * 100}%"></span></div>
+      <section class="setup-path">${steps.map((step, index) => `<button class="setup-step ${step.done ? "done" : index === steps.indexOf(nextStep) ? "current" : ""}" data-route="${step.route}"><i>${step.done ? "✓" : index + 1}</i><span><strong>${step.title}</strong><small>${step.detail}</small></span><b>›</b></button>`).join("")}</section>
+      <button class="primary wide continue-setup" data-route="${nextStep.route}">CONTINUE WHERE I LEFT OFF</button>
+      <details class="event-tools"><summary>More event tools</summary><div><button data-route="standings">Scores & standings</button><button data-route="playoffs">Playoffs</button><button data-route="activity">Activity log</button><button data-route="settings">Recovery & connection</button></div></details>`, "command-home", "event-command-screen");
+  }
+  function eventSetupSteps() {
+    const assignedStaff = state.staff.filter(person => person.name !== "Unassigned").length;
+    return [
+      { title: "Event details", detail: "Format, dates, venue, and rules", route: "event-settings", done: Boolean(state.event.name && state.event.date && state.event.venue) },
+      { title: "Teams & divisions", detail: `${state.teams.length} teams · ${state.divisions.length} divisions`, route: "teams", done: state.teams.length >= 2 && state.divisions.length >= 1 },
+      { title: "Build schedule", detail: state.scheduleDraft.generated ? `${state.schedule.length} matches generated` : "Generate and review match times", route: state.scheduleDraft.generated ? "master-schedule" : "schedule-builder", done: state.scheduleDraft.generated },
+      { title: "Fields & pits", detail: `${state.fields.length} fields configured`, route: "fields", done: state.fields.length >= 1 },
+      { title: "Staff & broadcast", detail: assignedStaff === state.staff.length ? "All roles assigned" : `${state.staff.length - assignedStaff} roles need attention`, route: "staff", done: assignedStaff === state.staff.length },
+      { title: "Publish event", detail: state.scheduleDraft.published ? "Schedule and event are live" : "Publish when setup is ready", route: "publishing", done: state.scheduleDraft.published }
+    ];
   }
   function menu(target, count, title, text) { return `<button class="menu-card" data-route="${target}"><span class="count">${count}</span><strong>${title}</strong><small>${text}</small></button>`; }
   function renderFormPage(title, fields) {
@@ -164,7 +191,7 @@
       <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
       ${controllerMainButton()}${state.controller.phase === "POINT_STOPPED_WAITING_DECISION" ? decisionPanel() : ""}
       <section class="controller-card"><h2>NEXT UP</h2>${state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("")}</section>
-      <div class="controller-nav"><button data-route="event-dashboard">DASHBOARD</button><button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button></div></div>`, null, "controller-screen");
+      <div class="controller-nav"><button data-route="command-home">HOME</button><button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button></div></div>`, null, "controller-screen");
     startFrame();
   }
   function scoreForPhysical(side) { const team = side === "left" ? state.controller.activeMatch.leftPhysicalTeam : state.controller.activeMatch.rightPhysicalTeam; return team === state.controller.activeMatch.leftTeam ? state.controller.activeMatch.leftScore : state.controller.activeMatch.rightScore; }
@@ -313,6 +340,36 @@
     modalBody.innerHTML = `<h2>Connect PBN Backend</h2><p class="muted">Store only the public base URL here. Configure the secret reference <strong>PBN_BACKEND_ACCESS_TOKEN</strong> in the engine after import.</p><div class="field"><label>Backend base URL</label><input id="connectionUrl" placeholder="https://api.example.com" value="${state.connection.baseUrl}"></div><button class="primary wide" style="margin-top:14px" type="button" data-action="save-connection">SAVE CONNECTION NAME</button>`;
     modal.showModal();
   }
+  function showScrimmageSetup() {
+    modalBody.innerHTML = `<h2>Start a Scrimmage</h2><p class="muted">One quick screen, then the controller opens.</p><div class="field-grid"><div class="field"><label>Format</label><select id="scrimmageFormat"><option>Race-to-3</option><option>Race-to-4</option><option>Uncapped points</option></select></div><div class="field"><label>Left team</label><input id="scrimmageLeft" value="TEAM 1" maxlength="24"></div><div class="field"><label>Right team</label><input id="scrimmageRight" value="TEAM 2" maxlength="24"></div></div><button class="primary wide" style="margin-top:16px" type="button" data-action="start-scrimmage">OPEN CONTROLLER</button>`;
+    modal.showModal();
+  }
+  function startScrimmage() {
+    const left = $("#scrimmageLeft").value.trim() || "TEAM 1";
+    const right = $("#scrimmageRight").value.trim() || "TEAM 2";
+    const format = $("#scrimmageFormat").value;
+    const c = clone(defaultState.controller);
+    c.activeMatch = { ...c.activeMatch, id: `scrimmage-${Date.now()}`, leftTeam: left, rightTeam: right, leftPhysicalTeam: left, rightPhysicalTeam: right };
+    c.inactiveMatch = { ...c.inactiveMatch, id: `scrimmage-next-${Date.now()}`, leftTeam: "NEXT TEAM", rightTeam: "NEXT TEAM", leftPhysicalTeam: "NEXT TEAM", rightPhysicalTeam: "NEXT TEAM" };
+    state.controller = c;
+    state.session = { active: true, type: "scrimmage", label: `${left} vs ${right}`, format };
+    logAction("SCRIMMAGE_STARTED", { left, right, format });
+    modal.close();
+    route("live-controller");
+  }
+  function runEvent() {
+    if (state.session?.type !== "event") {
+      const c = clone(defaultState.controller);
+      const active = state.schedule[0];
+      const inactive = state.schedule[1];
+      c.activeMatch = { ...c.activeMatch, id: active.id, leftTeam: active.left, rightTeam: active.right, leftPhysicalTeam: active.left, rightPhysicalTeam: active.right };
+      c.inactiveMatch = { ...c.inactiveMatch, id: inactive.id, leftTeam: inactive.left, rightTeam: inactive.right, leftPhysicalTeam: inactive.left, rightPhysicalTeam: inactive.right };
+      state.controller = c;
+    }
+    state.session = { active: true, type: "event", label: state.event.name, format: state.event.format };
+    logAction("EVENT_CONTROL_OPENED", { eventId: state.event.id });
+    route("live-controller");
+  }
   function exportLog() {
     const blob = new Blob([JSON.stringify({ exportedAt: now(), event: state.event, actions: getLog() }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "pbn-event-action-log.json"; a.click(); URL.revokeObjectURL(url); toast("Local action log exported.");
@@ -325,7 +382,10 @@
       setBreakClock(Number(button.dataset.clockSeconds) * 1000); return;
     }
     const action = button.dataset.action;
-    if (action === "demo-login") { state.authenticated = true; logAction("OFFLINE_DEMO_STARTED"); route("leagues"); }
+    if (action === "demo-login") { state.authenticated = true; logAction("OFFLINE_DEMO_STARTED"); route("command-home"); }
+    else if (action === "open-scrimmage") showScrimmageSetup();
+    else if (action === "start-scrimmage") startScrimmage();
+    else if (action === "run-event") runEvent();
     else if (action === "connection") showConnection();
     else if (action === "save-connection") { const value = $("#connectionUrl").value.trim(); state.connection.baseUrl = value; state.connection.configured = Boolean(value); save(); modal.close(); toast(value ? "Connection reference saved." : "Offline mode kept."); render(); }
     else if (action === "save-form") { logAction("EVENT_SETTINGS_UPDATED"); toast("Changes saved locally."); }
