@@ -5,7 +5,7 @@ workflows:
     max_build_duration: 60
 
     integrations:
-      app_store_connect: PBN Codemagic
+      app_store_connect: atlas-app-store-connect
 
     environment:
       ios_signing:
