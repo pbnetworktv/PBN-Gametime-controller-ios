@@ -28,11 +28,18 @@ test("break clock supports announcements, countdown cues, and separate default m
   assert.match(app, /function synthHorn/);
   assert.match(app, /playCue\("game-start-horn", synthHorn, \(\) => speak\("Game started"\)\)/);
   assert.match(app, /\[30, 20, 10\]/);
-  assert.match(app, /playCue\("countdown-beep"/);
+  assert.match(app, /function playCountdownCue/);
   assert.match(app, /unlockCueAudio/);
   assert.match(app, /BREAK_CLOCK_JUMPED/);
   assert.match(app, /BREAK_DEFAULT_CHANGED/);
   assert.match(app, /set-default-mode/);
+});
+
+test("three selectable countdown sounds are bundled into settings", () => {
+  assert.match(app, /scoreboard-beep/);
+  assert.match(app, /referee-timer-beep/);
+  assert.match(app, /tournament-beep/);
+  assert.match(app, /id="countdownCue"/);
 });
 
 test("pause control exposes resume state and viewport zoom is disabled", () => {
