@@ -65,7 +65,8 @@
   let frame = null;
   let clockPickerMode = "jump";
   let audioContext = null;
-  const cuePlayers = new Map();
+  let cuePlayer = null;
+  let cuePlayerName = null;
 
   function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   function getLog() { try { return JSON.parse(localStorage.getItem(EVENT_LOG_KEY)) || []; } catch { return []; } }
@@ -268,21 +269,25 @@
   }
   function playCountdownCue() { playCue(state.audio?.countdownCue || "scoreboard-beep", () => tone(1450, .16)); }
   function getCuePlayer(name) {
-    if (!cuePlayers.has(name)) {
-      const player = new Audio(`./audio/${name}.mp3`);
-      player.preload = "auto";
-      player.setAttribute("playsinline", "");
-      cuePlayers.set(name, player);
+    if (!cuePlayer) {
+      cuePlayer = new Audio();
+      cuePlayer.preload = "auto";
+      cuePlayer.setAttribute("playsinline", "");
     }
-    return cuePlayers.get(name);
+    if (cuePlayerName !== name) {
+      cuePlayer.pause();
+      cuePlayer.src = `./audio/${name}.mp3`;
+      cuePlayer.load();
+      cuePlayerName = name;
+    }
+    return cuePlayer;
   }
   function unlockCueAudio() {
-    [state.audio?.countdownCue || "scoreboard-beep", "game-start-horn"].forEach((name) => {
-      const player = getCuePlayer(name);
-      player.volume = 0;
-      const attempt = player.play();
-      if (attempt?.then) attempt.then(() => { player.pause(); player.currentTime = 0; player.volume = 1; }).catch(() => { player.volume = 1; });
-    });
+    const player = getCuePlayer(state.audio?.countdownCue || "scoreboard-beep");
+    player.volume = 0;
+    const attempt = player.play();
+    if (!attempt?.then) { player.volume = 1; return Promise.resolve(); }
+    return attempt.then(() => { player.pause(); player.currentTime = 0; player.volume = 1; }).catch(() => { player.volume = 1; });
   }
   function playCue(name, fallback, onFinished) {
     try {
@@ -472,7 +477,7 @@
     else if (action === "schedule-back") { state.scheduleDraft.step = Math.max(1, state.scheduleDraft.step - 1); save(); renderScheduleBuilder(); }
     else if (action === "schedule-next") { if (state.scheduleDraft.step < 4) state.scheduleDraft.step += 1; else { state.scheduleDraft.generated = true; state.scheduleDraft.version += 1; logAction("SCHEDULE_GENERATED", { version: state.scheduleDraft.version }); return route("master-schedule"); } save(); renderScheduleBuilder(); }
     else if (action === "publish-schedule") { state.scheduleDraft.published = true; state.event.status = "Published"; logAction("SCHEDULE_PUBLISHED", { version: state.scheduleDraft.version }); renderMasterSchedule(); }
-    else if (action === "start-break") { const ms = state.controller.breakMs || state.controller.breakDefaultMs; ensureAudio(); unlockCueAudio(); speak(spokenDuration(ms)); state.controller.phase = "BREAK_RUNNING"; state.controller.lastAnnouncement = null; startAnchor("break", ms); logAction("BREAK_STARTED", { ms }); renderController(); }
+    else if (action === "start-break") { const ms = state.controller.breakMs || state.controller.breakDefaultMs; ensureAudio(); unlockCueAudio().finally(() => speak(spokenDuration(ms))); state.controller.phase = "BREAK_RUNNING"; state.controller.lastAnnouncement = null; startAnchor("break", ms); logAction("BREAK_STARTED", { ms }); renderController(); }
     else if (action === "pause") pauseClock();
     else if (action === "base") base(button.dataset.side || "left");
     else if (action === "approve-point") decide("approve");

@@ -27,6 +27,8 @@ test("break clock supports announcements, countdown cues, and separate default m
   assert.match(app, /speak\("Game started"\)/);
   assert.match(app, /function synthHorn/);
   assert.match(app, /playCue\("game-start-horn", synthHorn, \(\) => speak\("Game started"\)\)/);
+  assert.match(app, /let cuePlayer = null/);
+  assert.doesNotMatch(app, /const cuePlayers = new Map/);
   assert.match(app, /\[30, 20, 10\]/);
   assert.match(app, /function playCountdownCue/);
   assert.match(app, /unlockCueAudio/);
