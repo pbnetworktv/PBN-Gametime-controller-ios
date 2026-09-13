@@ -97,3 +97,8 @@ test("member sessions persist securely across app launches", () => {
   assert.match(app, /delete-account/);
   assert.doesNotMatch(app, /localStorage\.setItem\([^\n]*session\.token/);
 });
+
+test("legacy and offline demo state cannot bypass account entry on launch", () => {
+  assert.match(app, /if \(!saved\?\.token\) \{\s*state\.authenticated = false;/);
+  assert.match(app, /state\.route = "login";/);
+});

@@ -122,13 +122,11 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   async function restoreAuthSession() {
     const saved = await readSecureSession();
     if (!saved?.token) {
-      if (state.authMode === "member") {
-        state.authenticated = false;
-        state.authMode = null;
-        state.member = null;
-        state.route = "login";
-        save();
-      }
+      state.authenticated = false;
+      state.authMode = null;
+      state.member = null;
+      state.route = "login";
+      save();
       render();
       return;
     }
