@@ -25,9 +25,10 @@ test("live controls and correction semantics are distinct", () => {
 test("break clock supports announcements, countdown cues, and separate default mode", () => {
   assert.match(app, /spokenDuration/);
   assert.match(app, /speak\("Game started"\)/);
-  assert.match(app, /function horn/);
+  assert.match(app, /function synthHorn/);
   assert.match(app, /\[30, 20, 10\]/);
-  assert.match(app, /tone\(1450, \.09\)/);
+  assert.match(app, /playCue\("countdown-beep"/);
+  assert.match(app, /unlockCueAudio/);
   assert.match(app, /BREAK_CLOCK_JUMPED/);
   assert.match(app, /BREAK_DEFAULT_CHANGED/);
   assert.match(app, /set-default-mode/);

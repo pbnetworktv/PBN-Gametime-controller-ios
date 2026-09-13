@@ -64,6 +64,7 @@
   let frame = null;
   let clockPickerMode = "jump";
   let audioContext = null;
+  const cuePlayers = new Map();
 
   function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   function getLog() { try { return JSON.parse(localStorage.getItem(EVENT_LOG_KEY)) || []; } catch { return []; } }
@@ -238,7 +239,7 @@
       announceCountdown(remaining);
       if (remaining <= 0) {
         c.breakMs = 0;
-        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; horn(); speak("Game started"); }
+        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; playCue("game-start-horn", synthHorn); speak("Game started"); }
         c.phase = "POINT_LIVE";
         startAnchor("game", c.gameMs);
         logAction("GAME_CLOCK_AUTO_STARTED", { gameMs: c.gameMs });
@@ -256,13 +257,40 @@
     if ([30, 20, 10].includes(seconds) && state.controller.lastAnnouncement !== seconds) {
       state.controller.lastAnnouncement = seconds;
       speak(`${seconds} seconds`);
-      if (seconds === 10) tone(1450, .09);
+      if (seconds === 10) playCue("countdown-beep", () => tone(1450, .16));
       return;
     }
     if (seconds > 0 && seconds <= 10 && state.controller.lastAnnouncement !== seconds) {
       state.controller.lastAnnouncement = seconds;
-      tone(1450, .09);
+      playCue("countdown-beep", () => tone(1450, .16));
     }
+  }
+  function getCuePlayer(name) {
+    if (!cuePlayers.has(name)) {
+      const player = new Audio(`./audio/${name}.mp3`);
+      player.preload = "auto";
+      player.setAttribute("playsinline", "");
+      cuePlayers.set(name, player);
+    }
+    return cuePlayers.get(name);
+  }
+  function unlockCueAudio() {
+    ["countdown-beep", "game-start-horn"].forEach((name) => {
+      const player = getCuePlayer(name);
+      player.volume = 0;
+      const attempt = player.play();
+      if (attempt?.then) attempt.then(() => { player.pause(); player.currentTime = 0; player.volume = 1; }).catch(() => { player.volume = 1; });
+    });
+  }
+  function playCue(name, fallback) {
+    try {
+      const player = getCuePlayer(name);
+      player.pause();
+      player.currentTime = 0;
+      player.volume = 1;
+      const attempt = player.play();
+      if (attempt?.catch) attempt.catch(() => fallback?.());
+    } catch { fallback?.(); }
   }
   function ensureAudio() {
     try {
@@ -276,7 +304,7 @@
   function tone(frequency, seconds) {
     try { const ctx = ensureAudio(); if (!ctx) return; const oscillator = ctx.createOscillator(); const gain = ctx.createGain(); oscillator.type = "sine"; oscillator.frequency.value = frequency; gain.gain.value = .72; oscillator.connect(gain); gain.connect(ctx.destination); oscillator.start(); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + seconds); oscillator.stop(ctx.currentTime + seconds); } catch { /* Audio is an enhancement. */ }
   }
-  function horn() {
+  function synthHorn() {
     try {
       const ctx = ensureAudio(); if (!ctx) return;
       const gain = ctx.createGain(); gain.gain.value = .68; gain.connect(ctx.destination);
@@ -441,7 +469,7 @@
     else if (action === "schedule-back") { state.scheduleDraft.step = Math.max(1, state.scheduleDraft.step - 1); save(); renderScheduleBuilder(); }
     else if (action === "schedule-next") { if (state.scheduleDraft.step < 4) state.scheduleDraft.step += 1; else { state.scheduleDraft.generated = true; state.scheduleDraft.version += 1; logAction("SCHEDULE_GENERATED", { version: state.scheduleDraft.version }); return route("master-schedule"); } save(); renderScheduleBuilder(); }
     else if (action === "publish-schedule") { state.scheduleDraft.published = true; state.event.status = "Published"; logAction("SCHEDULE_PUBLISHED", { version: state.scheduleDraft.version }); renderMasterSchedule(); }
-    else if (action === "start-break") { const ms = state.controller.breakMs || state.controller.breakDefaultMs; ensureAudio(); speak(spokenDuration(ms)); state.controller.phase = "BREAK_RUNNING"; state.controller.lastAnnouncement = null; startAnchor("break", ms); logAction("BREAK_STARTED", { ms }); renderController(); }
+    else if (action === "start-break") { const ms = state.controller.breakMs || state.controller.breakDefaultMs; ensureAudio(); unlockCueAudio(); speak(spokenDuration(ms)); state.controller.phase = "BREAK_RUNNING"; state.controller.lastAnnouncement = null; startAnchor("break", ms); logAction("BREAK_STARTED", { ms }); renderController(); }
     else if (action === "pause") pauseClock();
     else if (action === "base") base(button.dataset.side || "left");
     else if (action === "approve-point") decide("approve");
