@@ -20,13 +20,15 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     authMode: null,
     member: null,
     remoteEvents: [],
+    activeEventId: "event-demo",
+    eventWorkspaces: {},
     route: "login",
     connection: { configured: false, name: "PBN Backend", baseUrl: "" },
     audio: { countdownCue: "field-reference-beep", cueLibraryVersion: 2 },
     operator: { name: "Demo Operator", role: "Event Director" },
     session: { active: false, type: null, label: null, format: null, pointLimit: null, deckStyle: null },
     league: { id: "league-demo", name: "PBN Demo League", season: "2026 Season" },
-    event: { id: "event-demo", name: "Fall Championship", date: "Sep 19–20, 2026", venue: "PBN Field Complex", format: "Race-to preset", status: "Draft" },
+    event: { id: "event-demo", source: "demo", name: "Fall Championship", date: "Sep 19–20, 2026", venue: "PBN Field Complex", format: "Race-to preset", status: "Draft" },
     divisions: [{ id: "d1", name: "Open X-Ball", teams: 8, format: "Race-to-4" }, { id: "d2", name: "3v3 Novice", teams: 6, format: "Race-to-2" }],
     teams: ["RED LEGION", "DAMAGE", "AFTERMATH", "DYNASTY", "IMPACT", "HEAT", "INFAMOUS", "REBELS"],
     fields: [{ id: "f1", name: "Field 1", pitLeft: "Pit 1", pitRight: "Pit 2" }, { id: "f2", name: "Field 2", pitLeft: "Pit 3", pitRight: "Pit 4" }],
@@ -67,7 +69,21 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       const migratedAudio = saved.audio?.cueLibraryVersion === 2
         ? { ...clone(defaultState.audio), ...saved.audio }
         : clone(defaultState.audio);
-      return { ...clone(defaultState), ...saved, audio: migratedAudio, controller: { ...clone(defaultState.controller), ...(saved.controller || {}) } };
+      const migrated = { ...clone(defaultState), ...saved, audio: migratedAudio, controller: { ...clone(defaultState.controller), ...(saved.controller || {}) } };
+      if (!Object.prototype.hasOwnProperty.call(saved, "activeEventId") && saved.event?.id && saved.event.id !== "event-demo") {
+        migrated.activeEventId = saved.event.id;
+        migrated.eventWorkspaces = {};
+        migrated.divisions = [];
+        migrated.teams = [];
+        migrated.fields = [];
+        migrated.staff = [];
+        migrated.schedule = [];
+        migrated.standings = [];
+        migrated.controller = { ...clone(defaultState.controller), eventId: saved.event.id, activeMatch: null, inactiveMatch: null, activeAnchor: null, pointHistory: [], undoStack: [] };
+        migrated.scheduleDraft = { ...clone(defaultState.scheduleDraft), eventId: saved.event.id, fields: 0, generated: false, published: false };
+        migrated.session = { active: false, type: null, eventId: saved.event.id, label: saved.event.name, format: saved.event.format, pointLimit: saved.event.pointLimit || null, deckStyle: saved.event.deckStyle || null };
+      }
+      return migrated;
     } catch { return clone(defaultState); }
   }
 
@@ -80,7 +96,28 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   let authView = "sign-in";
   let authBusy = false;
 
-  function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  function captureActiveEventWorkspace() {
+    const eventId = state.activeEventId;
+    if (!eventId || eventId === "event-demo") return;
+    state.eventWorkspaces ||= {};
+    state.eventWorkspaces[eventId] = clone({
+      eventId,
+      event: state.event,
+      divisions: state.divisions,
+      teams: state.teams,
+      fields: state.fields,
+      staff: state.staff,
+      schedule: state.schedule,
+      standings: state.standings,
+      controller: state.controller,
+      scheduleDraft: state.scheduleDraft,
+      session: state.session
+    });
+  }
+  function save() {
+    captureActiveEventWorkspace();
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
   function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]); }
   function remoteEventDateLabel(event) {
     const date = event.endDate && event.endDate !== event.startDate ? `${event.startDate} – ${event.endDate}` : event.startDate;
@@ -192,13 +229,16 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   }
   function getLog() { try { return JSON.parse(localStorage.getItem(EVENT_LOG_KEY)) || []; } catch { return []; } }
   function logAction(type, payload = {}) {
-    const entry = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, at: now(), type, payload, syncStatus: state.connection.configured ? "pending" : "local-only" };
+    const entry = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, eventId: state.activeEventId || state.event?.id || null, at: now(), type, payload, syncStatus: state.connection.configured ? "pending" : "local-only" };
     const log = [...getLog(), entry].slice(-500);
     localStorage.setItem(EVENT_LOG_KEY, JSON.stringify(log));
     state.activity = log.slice(-30).reverse();
     if (state.connection.configured) state.sync.pending += 1;
     save();
     return entry;
+  }
+  function getEventLog(eventId = state.activeEventId || state.event?.id) {
+    return getLog().filter((entry) => entry.eventId === eventId);
   }
   function toast(message) { const el = $("#toast"); el.textContent = message; el.classList.add("show"); clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 2200); }
   function formatMs(ms) { const total = Math.max(0, Math.ceil(ms / 1000)); return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`; }
@@ -277,7 +317,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       <button class="command-choice quick" data-action="open-scrimmage"><span class="choice-icon">▶</span><span><strong>START A SCRIMMAGE</strong><small>Pick a format, name the teams, and start playing</small></span><b>›</b></button>
       <button class="command-choice" data-route="event-dashboard"><span class="choice-icon">▤</span><span><strong>SET UP A FULL EVENT</strong><small>Schedule, divisions, fields, staff, and publishing</small></span><b>›</b></button>`}
       ${state.authMode === "member" ? `<section class="recent-event"><div class="section-title"><h2>My PBN events</h2><span class="status good">SYNCED</span></div>${sharedEvents.length ? sharedEvents.map((item) => `<button class="event-summary" data-action="open-remote-event" data-event-id="${escapeHtml(item.id)}"><div><span class="eyebrow">${escapeHtml(item.status)} · ${escapeHtml(item.visibility)}</span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(remoteEventDateLabel(item))} · ${escapeHtml(item.venue)}</small></div><b>OPEN ›</b></button>`).join("") : `<div class="card empty">No shared events yet. Create a draft from the Game Time tab on PBNetwork.tv.</div>`}</section>` : ""}
-      <section class="recent-event"><div class="section-title"><h2>Local planned event</h2><span class="status warn">${state.event.status.toUpperCase()}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${state.league.name}</span><strong>${state.event.name}</strong><small>${state.event.date} · ${state.event.venue}</small></div><b>CONTINUE ›</b></button></section>`, "command-home", "command-screen");
+      ${state.event.source === "PBN" ? "" : `<section class="recent-event"><div class="section-title"><h2>Local planned event</h2><span class="status warn">${state.event.status.toUpperCase()}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${state.league.name}</span><strong>${state.event.name}</strong><small>${state.event.date} · ${state.event.venue}</small></div><b>CONTINUE ›</b></button></section>`}`, "command-home", "command-screen");
   }
   function renderLeagues() {
     page(`${topbar("My Leagues", "login")}<section class="card hero"><span class="eyebrow">CURRENT ORGANIZATION</span><h2>${state.league.name}</h2><p>${state.league.season} · one event ready for testing</p><button class="primary wide" data-route="league-home">OPEN LEAGUE</button></section><div class="section-title"><h2>Other leagues</h2></div><div class="card empty">Connect the PBN backend to load additional organizations.</div>`, null);
@@ -290,8 +330,8 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     const steps = eventSetupSteps();
     const complete = steps.filter(step => step.done).length;
     const nextStep = steps.find(step => !step.done) || steps[steps.length - 1];
-    page(`${topbar("Event Command", "command-home")}<section class="event-command-hero"><div><span class="eyebrow">${state.event.status} · ${state.event.date}</span><h2>${state.event.name}</h2><p>${state.event.venue}</p></div><button class="run-event" data-action="run-event">▶ RUN EVENT</button></section>
-      <div class="section-title"><h2>Up next</h2><span class="status">${next.time}</span></div><button class="next-match" data-action="run-event"><div><strong>${next.left} vs ${next.right}</strong><small>${next.field} · ${next.status}</small></div><span>OPEN CONTROLLER ›</span></button>
+    page(`${topbar("Event Command", "command-home")}<section class="event-command-hero"><div><span class="eyebrow">${state.event.status} · ${state.event.date}</span><h2>${state.event.name}</h2><p>${state.event.venue}</p><small>Event ID: ${escapeHtml(state.event.id)}</small></div><button class="run-event" data-action="run-event" ${next ? "" : "disabled"}>▶ RUN EVENT</button></section>
+      <div class="section-title"><h2>Up next</h2>${next ? `<span class="status">${next.time}</span>` : ""}</div>${next ? `<button class="next-match" data-action="run-event"><div><strong>${next.left} vs ${next.right}</strong><small>${next.field} · ${next.status}</small></div><span>OPEN CONTROLLER ›</span></button>` : `<div class="card empty">No matches are assigned to this event yet. Add teams, then build the event schedule.</div>`}
       <div class="readiness-head"><div><span class="eyebrow">EVENT READINESS</span><h2>${complete} of ${steps.length} complete</h2></div><strong>${Math.round(complete / steps.length * 100)}%</strong></div><div class="readiness-bar"><span style="width:${complete / steps.length * 100}%"></span></div>
       <section class="setup-path">${steps.map((step, index) => `<button class="setup-step ${step.done ? "done" : index === steps.indexOf(nextStep) ? "current" : ""}" data-route="${step.route}"><i>${step.done ? "✓" : index + 1}</i><span><strong>${step.title}</strong><small>${step.detail}</small></span><b>›</b></button>`).join("")}</section>
       <button class="primary wide continue-setup" data-route="${nextStep.route}">CONTINUE WHERE I LEFT OFF</button>
@@ -304,7 +344,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       { title: "Teams & divisions", detail: `${state.teams.length} teams · ${state.divisions.length} divisions`, route: "teams", done: state.teams.length >= 2 && state.divisions.length >= 1 },
       { title: "Build schedule", detail: state.scheduleDraft.generated ? `${state.schedule.length} matches generated` : "Generate and review match times", route: state.scheduleDraft.generated ? "master-schedule" : "schedule-builder", done: state.scheduleDraft.generated },
       { title: "Fields & pits", detail: `${state.fields.length} fields configured`, route: "fields", done: state.fields.length >= 1 },
-      { title: "Staff & broadcast", detail: assignedStaff === state.staff.length ? "All roles assigned" : `${state.staff.length - assignedStaff} roles need attention`, route: "staff", done: assignedStaff === state.staff.length },
+      { title: "Staff & broadcast", detail: state.staff.length > 0 && assignedStaff === state.staff.length ? "All roles assigned" : state.staff.length ? `${state.staff.length - assignedStaff} roles need attention` : "No staff assigned", route: "staff", done: state.staff.length > 0 && assignedStaff === state.staff.length },
       { title: "Publish event", detail: state.scheduleDraft.published ? "Schedule and event are live" : "Publish when setup is ready", route: "publishing", done: state.scheduleDraft.published }
     ];
   }
@@ -328,7 +368,11 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   function matchRow(m) { return `<div class="list-row"><div><strong>${m.left} vs ${m.right}</strong><small>${m.time} · ${m.field}</small></div><span class="status">${m.status}</span></div>`; }
 
   function renderController() {
-    const singleDeck = state.session?.type === "scrimmage" && state.session.deckStyle !== "split";
+    if (!state.controller?.activeMatch) {
+      page(`${topbar("Live Controller", "event-dashboard")}<section class="card empty"><h2>No match is ready</h2><p>This event has no scheduled teams yet. Add teams and build its schedule before opening the controller.</p><small>Event ID: ${escapeHtml(state.activeEventId || state.event?.id || "")}</small></section>`, "event-dashboard");
+      return;
+    }
+    const singleDeck = !state.controller.inactiveMatch || (state.session?.type === "scrimmage" && state.session.deckStyle !== "split");
     const splitScrimmage = state.session?.type === "scrimmage" && state.session.deckStyle === "split";
     const nextRows = splitScrimmage
       ? `<div class="next-row"><span>${state.controller.inactiveMatch.leftTeam}</span><b>VS</b><span>${state.controller.inactiveMatch.rightTeam}</span><span>ON DECK</span></div>`
@@ -357,15 +401,19 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   }
   function decisionPanel() { return `<section class="decision"><h3>${state.controller.pendingBaseSide?.toUpperCase()} BASE · DECISION</h3><div class="decision-grid"><button class="approve" data-action="approve-point">APPROVE POINT</button><button class="reverse" data-action="reverse-point">REVERSE POINT</button><button class="no-point" data-action="no-point">NO POINT</button></div><button class="secondary wide" style="margin-top:8px;min-height:38px" data-action="undo">UNDO LAST ACTION</button></section>`; }
 
-  function renderStandings() { page(`${topbar("Scores & Standings")}<section class="card"><span class="eyebrow">LIVE · OPEN X-BALL</span><div class="list">${state.standings.map((s,i) => `<div class="list-row"><strong style="width:22px">${i+1}</strong><div><strong>${s.team}</strong><small>${s.w} W · ${s.l} L</small></div><span class="status ${i<2?"good":""}">${s.diff >= 0 ? "+" : ""}${s.diff}</span></div>`).join("")}</div></section>`, "event-dashboard"); }
-  function renderPlayoffs() { page(`${topbar("Playoffs")}<section class="card"><span class="eyebrow">PROJECTED · NOT OFFICIAL</span><h2>Semifinals</h2><div class="list"><div class="list-row"><div><strong>1 RED LEGION vs 4 IMPACT</strong><small>Projected from current standings</small></div></div><div class="list-row"><div><strong>2 DYNASTY vs 3 DAMAGE</strong><small>Projected from current standings</small></div></div></div><button class="primary wide" style="margin-top:16px" data-action="finalize-playoffs">FINALIZE WHEN QUALIFYING ENDS</button></section>`, "event-dashboard"); }
+  function renderStandings() { page(`${topbar("Scores & Standings")}<section class="card"><span class="eyebrow">${escapeHtml(state.event.format || "EVENT")} · EVENT ID ${escapeHtml(state.activeEventId || state.event.id)}</span><div class="list">${state.standings.length ? state.standings.map((s,i) => `<div class="list-row"><strong style="width:22px">${i+1}</strong><div><strong>${s.team}</strong><small>${s.w} W · ${s.l} L</small></div><span class="status ${i<2?"good":""}">${s.diff >= 0 ? "+" : ""}${s.diff}</span></div>`).join("") : `<div class="empty">No scores have been recorded for this event.</div>`}</div></section>`, "event-dashboard"); }
+  function renderPlayoffs() {
+    const teams = state.standings.slice(0, 4).map((standing) => standing.team);
+    const bracket = teams.length >= 4 ? `<h2>Semifinals</h2><div class="list"><div class="list-row"><div><strong>1 ${escapeHtml(teams[0])} vs 4 ${escapeHtml(teams[3])}</strong><small>Projected from this event's standings</small></div></div><div class="list-row"><div><strong>2 ${escapeHtml(teams[1])} vs 3 ${escapeHtml(teams[2])}</strong><small>Projected from this event's standings</small></div></div></div>` : `<div class="empty">This event does not have enough results to project playoffs.</div>`;
+    page(`${topbar("Playoffs")}<section class="card"><span class="eyebrow">PROJECTED · NOT OFFICIAL</span>${bracket}</section>`, "event-dashboard");
+  }
   function renderTeams() { page(`${topbar("Teams")}<div class="list">${state.teams.map((t,i) => `<button class="list-row" data-action="team-detail"><strong style="width:24px">${i+1}</strong><div><strong>${t}</strong><small>Roster managed in future player app</small></div><span>›</span></button>`).join("")}</div>`, "event-dashboard"); }
   function renderDivisions() { page(`${topbar("Divisions")}<div class="list">${state.divisions.map(d => `<button class="list-row"><div><strong>${d.name}</strong><small>${d.teams} teams · ${d.format}</small></div><span>›</span></button>`).join("")}</div>`, "event-dashboard"); }
   function renderFields() { page(`${topbar("Fields & Pits")}<div class="list">${state.fields.map(f => `<button class="list-row"><div><strong>${f.name}</strong><small>${f.pitLeft} · ${f.pitRight}</small></div><span class="status good">ACTIVE</span></button>`).join("")}</div>`, "event-dashboard"); }
   function renderStaff() { page(`${topbar("Staff")}<div class="list">${state.staff.map(s => `<button class="list-row"><div><strong>${s.name}</strong><small>${s.role}</small></div><span>›</span></button>`).join("")}</div><div class="card empty" style="margin-top:12px">Backend connection will provide invitations and permission assignments.</div>`, "event-dashboard"); }
-  function renderActivity() { const log = getLog(); page(`${topbar("Activity Log")}<section class="card"><span class="eyebrow">APPEND-ONLY LOCAL AUDIT</span><div class="list">${log.length ? log.slice().reverse().map(a => `<div class="list-row"><div><strong>${a.type.replaceAll("_", " ")}</strong><small>${new Date(a.at).toLocaleString()}</small></div><span class="status">${a.syncStatus}</span></div>`).join("") : `<div class="empty">Actions will appear here immediately, even offline.</div>`}</div></section>`, "event-dashboard"); }
+  function renderActivity() { const log = getEventLog(); page(`${topbar("Activity Log")}<section class="card"><span class="eyebrow">APPEND-ONLY LOCAL AUDIT</span><div class="list">${log.length ? log.slice().reverse().map(a => `<div class="list-row"><div><strong>${a.type.replaceAll("_", " ")}</strong><small>${new Date(a.at).toLocaleString()}</small></div><span class="status">${a.syncStatus}</span></div>`).join("") : `<div class="empty">Actions will appear here immediately, even offline.</div>`}</div></section>`, "event-dashboard"); }
   function renderPublishing() { page(`${topbar("Publishing Center")}<section class="card"><span class="eyebrow">PUBLIC OUTPUTS</span><div class="list"><div class="list-row"><div><strong>Public schedule</strong><small>Awaiting backend URL</small></div><span class="status warn">NOT CONNECTED</span></div><div class="list-row"><div><strong>Live scores</strong><small>Local controller state ready</small></div><span class="status good">READY</span></div><div class="list-row"><div><strong>PBNetwork.tv overlay</strong><small>Contract placeholder included</small></div><span class="status">SCAFFOLDED</span></div></div></section>`, "event-dashboard"); }
-  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">ACCOUNT</span><h2>${state.authMode === "member" ? (state.member?.screenName || state.member?.email || "PBN Member") : "Offline demo"}</h2><p class="muted">${state.authMode === "member" ? `${state.member?.email || ""} · securely remembered on this device` : "No PBN account is connected to this local demo."}</p>${state.authMode === "member" ? `<div class="button-row"><button class="secondary" data-action="sign-out">SIGN OUT</button><button class="danger" data-action="delete-account">DELETE ACCOUNT</button></div>` : ""}</section><section class="card" style="margin-top:12px"><span class="eyebrow">AUDIO CUES</span><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="field-reference-beep" ${state.audio?.countdownCue === "field-reference-beep" ? "selected" : ""}>Field controller reference</option><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : `Account service: ${DEFAULT_API_ORIGIN}`}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
+  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">ACCOUNT</span><h2>${state.authMode === "member" ? (state.member?.screenName || state.member?.email || "PBN Member") : "Offline demo"}</h2><p class="muted">${state.authMode === "member" ? `${state.member?.email || ""} · securely remembered on this device` : "No PBN account is connected to this local demo."}</p>${state.authMode === "member" ? `<div class="button-row"><button class="secondary" data-action="sign-out">SIGN OUT</button><button class="danger" data-action="delete-account">DELETE ACCOUNT</button></div>` : ""}</section><section class="card" style="margin-top:12px"><span class="eyebrow">AUDIO CUES</span><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="field-reference-beep" ${state.audio?.countdownCue === "field-reference-beep" ? "selected" : ""}>Field controller reference</option><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : `Account service: ${DEFAULT_API_ORIGIN}`}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getEventLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
 
   function startFrame() { stopFrame(); const tick = () => { updateClocks(); frame = requestAnimationFrame(tick); }; frame = requestAnimationFrame(tick); }
   function stopFrame() { if (frame) cancelAnimationFrame(frame); frame = null; }
@@ -483,7 +531,9 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     c.gameMs = c.activeAnchor ? anchoredRemaining(c.activeAnchor) : c.gameMs; c.activeMatch.gameMs = c.gameMs; c.activeAnchor = null; c.phase = "POINT_STOPPED_WAITING_DECISION"; c.pendingBaseSide = side; logAction(side === "left" ? "BUZZER_LEFT" : "BUZZER_RIGHT", { side, gameMs: c.gameMs }); speak("Base"); renderController();
   }
   function decide(kind) {
-    const c = state.controller; if (c.phase !== "POINT_STOPPED_WAITING_DECISION") return; snapshotController();
+    const c = state.controller; if (c.phase !== "POINT_STOPPED_WAITING_DECISION") return;
+    if (state.session?.deckStyle === "split" && !c.inactiveMatch) return toast("No second match is assigned to this event.");
+    snapshotController();
     const side = c.pendingBaseSide;
     const scoringSide = side === "left" ? "right" : "left";
     const scoringTeamId = scoringSide === "left" ? c.activeMatch.leftPhysicalTeamId : c.activeMatch.rightPhysicalTeamId;
@@ -558,10 +608,10 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     modal.showModal();
   }
   function teamId(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2,7)}`; }
-  function scrimmageMatch(id, left, right) {
+  function scrimmageMatch(id, left, right, eventId = state.activeEventId || state.event?.id || null) {
     const leftTeamId = teamId(`${id}-left`);
     const rightTeamId = teamId(`${id}-right`);
-    return { id, leftTeamId, rightTeamId, leftTeam: left, rightTeam: right, leftScore: 0, rightScore: 0, leftPhysicalTeamId: leftTeamId, rightPhysicalTeamId: rightTeamId, leftPhysicalTeam: left, rightPhysicalTeam: right, gameMs: 600000 };
+    return { id, eventId, leftTeamId, rightTeamId, leftTeam: left, rightTeam: right, leftScore: 0, rightScore: 0, leftPhysicalTeamId: leftTeamId, rightPhysicalTeamId: rightTeamId, leftPhysicalTeam: left, rightPhysicalTeam: right, gameMs: 600000 };
   }
   function startScrimmage() {
     const left = $("#scrimmageLeft").value.trim() || "TEAM 1";
@@ -577,26 +627,31 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       c.inactiveMatch = scrimmageMatch(`scrimmage-next-${Date.now()}`, nextLeft, nextRight);
     } else c.inactiveMatch = null;
     state.controller = c;
-    state.session = { active: true, type: "scrimmage", label: `${left} vs ${right}`, format, pointLimit, deckStyle };
+    state.session = { active: true, type: "scrimmage", eventId: null, label: `${left} vs ${right}`, format, pointLimit, deckStyle };
     logAction("SCRIMMAGE_STARTED", { left, right, format, pointLimit, deckStyle });
     modal.close();
     route("live-controller");
   }
   function runEvent() {
-    if (state.session?.type !== "event") {
+    const eventId = state.activeEventId || state.event?.id;
+    if (!eventId || eventId !== state.event?.id) return toast("This event could not be identified. Reopen it from My PBN events.");
+    if (!state.schedule.length) return toast("Add teams and build a schedule before running this event.");
+    if (!state.session?.active || state.session?.type !== "event" || state.session?.eventId !== eventId || !state.controller?.activeMatch) {
       const c = clone(defaultState.controller);
       const active = state.schedule[0];
       const inactive = state.schedule[1];
-      c.activeMatch = scrimmageMatch(active.id, active.left, active.right);
-      c.inactiveMatch = scrimmageMatch(inactive.id, inactive.left, inactive.right);
+      if (active.eventId && active.eventId !== eventId) return toast("That match belongs to a different event.");
+      c.eventId = eventId;
+      c.activeMatch = scrimmageMatch(active.id, active.left, active.right, eventId);
+      c.inactiveMatch = inactive ? scrimmageMatch(inactive.id, inactive.left, inactive.right, eventId) : null;
       state.controller = c;
     }
-    state.session = { active: true, type: "event", label: state.event.name, format: state.event.format, pointLimit: null, deckStyle: "split" };
-    logAction("EVENT_CONTROL_OPENED", { eventId: state.event.id });
+    state.session = { active: true, type: "event", eventId, label: state.event.name, format: state.event.format, pointLimit: state.event.pointLimit || null, deckStyle: state.controller.inactiveMatch ? "split" : "single" };
+    logAction("EVENT_CONTROL_OPENED", { eventId });
     route("live-controller");
   }
   function exportLog() {
-    const blob = new Blob([JSON.stringify({ exportedAt: now(), event: state.event, actions: getLog() }, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ exportedAt: now(), eventId: state.activeEventId || state.event?.id, event: state.event, actions: getEventLog() }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "pbn-event-action-log.json"; a.click(); URL.revokeObjectURL(url); toast("Local action log exported.");
   }
 
@@ -658,6 +713,54 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     } catch (error) { toast(error.message || "Account deletion failed."); }
   }
 
+  function emptyControllerForEvent(eventId) {
+    const controller = clone(defaultState.controller);
+    controller.eventId = eventId;
+    controller.activeMatch = null;
+    controller.inactiveMatch = null;
+    controller.phase = "READY";
+    controller.activeAnchor = null;
+    controller.pendingBaseSide = null;
+    controller.pointHistory = [];
+    controller.undoStack = [];
+    return controller;
+  }
+
+  function activateRemoteEvent(selected) {
+    save();
+    const eventId = selected.id;
+    const stored = state.eventWorkspaces?.[eventId];
+    const eventRecord = {
+      ...(stored?.event || {}),
+      id: eventId,
+      source: "PBN",
+      name: selected.name,
+      date: remoteEventDateLabel(selected),
+      venue: selected.venue,
+      format: selected.format || selected.eventType,
+      eventType: selected.eventType,
+      pointLimit: selected.pointLimit || "",
+      deckStyle: selected.deckStyle || "",
+      visibility: selected.visibility,
+      status: selected.status === "DRAFT" ? "Draft" : selected.status
+    };
+    const scheduleSource = stored?.schedule || (Array.isArray(selected.schedule) ? selected.schedule : []);
+    const schedule = scheduleSource.map((match) => ({ ...match, eventId }));
+    state.activeEventId = eventId;
+    state.event = eventRecord;
+    state.divisions = clone(stored?.divisions || (Array.isArray(selected.divisions) ? selected.divisions : []));
+    state.teams = clone(stored?.teams || (Array.isArray(selected.teams) ? selected.teams : []));
+    state.fields = clone(stored?.fields || (Array.isArray(selected.fields) ? selected.fields : []));
+    state.staff = clone(stored?.staff || (Array.isArray(selected.staff) ? selected.staff : []));
+    state.schedule = clone(schedule);
+    state.standings = clone(stored?.standings || (Array.isArray(selected.standings) ? selected.standings : []));
+    state.controller = clone(stored?.controller?.eventId === eventId ? stored.controller : emptyControllerForEvent(eventId));
+    state.scheduleDraft = clone(stored?.scheduleDraft || { ...defaultState.scheduleDraft, eventId, days: selected.endDate && selected.endDate !== selected.startDate ? 2 : 1, fields: 0, generated: false, published: false });
+    state.session = clone(stored?.session?.eventId === eventId ? stored.session : { active: false, type: null, eventId, label: selected.name, format: eventRecord.format, pointLimit: eventRecord.pointLimit || null, deckStyle: eventRecord.deckStyle || null });
+    logAction("REMOTE_EVENT_OPENED", { eventId });
+    route("event-dashboard");
+  }
+
   document.addEventListener("click", (event) => {
     const button = event.target.closest("button"); if (!button) return;
     if (button.dataset.route) return route(button.dataset.route);
@@ -670,17 +773,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     else if (action === "open-remote-event") {
       const selected = (state.remoteEvents || []).find((item) => item.id === button.dataset.eventId);
       if (!selected) return toast("That PBN event is no longer available.");
-      state.event = {
-        ...state.event,
-        id: selected.id,
-        name: selected.name,
-        date: remoteEventDateLabel(selected),
-        venue: selected.venue,
-        format: selected.eventType,
-        status: selected.status === "DRAFT" ? "Draft" : selected.status
-      };
-      logAction("REMOTE_EVENT_OPENED", { eventId: selected.id });
-      route("event-dashboard");
+      activateRemoteEvent(selected);
     }
     else if (action === "sign-out") signOut();
     else if (action === "delete-account") confirmAccountDeletion();

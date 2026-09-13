@@ -113,3 +113,13 @@ test("signed-in members can open their shared PBN events", () => {
   assert.match(app, /visibilitychange/);
   assert.match(app, /name === "command-home"/);
 });
+
+test("shared PBN events use their unique event ID and never inherit demo teams", () => {
+  assert.match(app, /function activateRemoteEvent/);
+  assert.match(app, /state\.activeEventId = eventId/);
+  assert.match(app, /eventWorkspaces\?\.\[eventId\]/);
+  assert.match(app, /Array\.isArray\(selected\.teams\) \? selected\.teams : \[\]/);
+  assert.match(app, /Array\.isArray\(selected\.schedule\).*: \[\]/);
+  assert.match(app, /if \(!state\.schedule\.length\) return toast\("Add teams and build a schedule before running this event\."\)/);
+  assert.match(app, /eventId: state\.activeEventId \|\| state\.event\?\.id \|\| null/);
+});
