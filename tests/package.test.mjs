@@ -93,7 +93,7 @@ test("member sessions persist securely across app launches", () => {
   assert.match(app, /\/api\/mobile-auth\/refresh/);
   assert.match(app, /\/api\/mobile-auth\/me/);
   assert.match(app, /refreshWithinMs/);
-  assert.match(app, /Create your account/);
+  assert.match(app, /CREATE YOUR PBN ACCOUNT/);
   assert.match(app, /delete-account/);
   assert.doesNotMatch(app, /localStorage\.setItem\([^\n]*session\.token/);
 });

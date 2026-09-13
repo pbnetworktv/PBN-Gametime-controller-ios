@@ -225,18 +225,16 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 
   function renderLogin() {
     const signIn = authView === "sign-in";
-    page(`<div class="auth-screen"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p><section class="card auth-card"><span class="eyebrow">PBN ACCOUNT</span><h2>${signIn ? "Welcome back." : "Create your account."}</h2><p class="muted">${signIn ? "Sign in once. This device will keep you signed in securely." : "One free PBN account works across PBN apps and the website."}</p>
+    page(`<div class="auth-screen"><section class="auth-card"><div class="auth-logo"><strong>PBN</strong><small>PAINTBALL BROADCAST NETWORK</small></div><h1>${signIn ? "SIGN IN TO YOUR ACCOUNT" : "CREATE YOUR PBN ACCOUNT"}</h1><p class="auth-intro">${signIn ? "Use your account credentials to run Game Time." : "Create one free account for PBN Game Time and PBNetwork.tv."}</p>
       <form id="${signIn ? "signInForm" : "signUpForm"}" class="auth-form">
         ${signIn ? "" : `<div class="auth-name-row"><div class="field"><label>First name</label><input id="authFirstName" autocomplete="given-name" required maxlength="40"></div><div class="field"><label>Last name</label><input id="authLastName" autocomplete="family-name" required maxlength="40"></div></div>`}
-        <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" inputmode="email" required></div>
-        <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="${signIn ? "current-password" : "new-password"}" minlength="8" required></div>
+        <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" inputmode="email" placeholder="you@example.com" required></div>
+        <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="${signIn ? "current-password" : "new-password"}" placeholder="Enter your password" minlength="8" required></div>
         ${signIn ? "" : `<div class="field"><label>Confirm password</label><input id="authConfirmPassword" type="password" autocomplete="new-password" minlength="8" required></div><label class="terms-check"><input id="authTerms" type="checkbox" required><span>I agree to the <a href="https://www.pbnetwork.tv/legal/terms" target="_blank">Terms</a> and <a href="https://www.pbnetwork.tv/legal/privacy" target="_blank">Privacy Policy</a>.</span></label>`}
         <p id="authError" class="auth-error" role="alert"></p>
-        <button class="primary wide" type="submit" ${authBusy ? "disabled" : ""}>${authBusy ? "PLEASE WAIT…" : signIn ? "SIGN IN" : "CREATE FREE ACCOUNT"}</button>
+        <button class="auth-submit" type="submit" ${authBusy ? "disabled" : ""}>${authBusy ? "Please wait…" : signIn ? "Sign in" : "Create account"}</button>
       </form>
-      <button class="auth-switch" data-action="toggle-auth">${signIn ? "New to PBN? Create an account" : "Already have an account? Sign in"}</button>
-      <div class="auth-divider"><span>or</span></div>
-      <button class="secondary wide" data-action="demo-login">ENTER OFFLINE DEMO</button>
+      <p class="auth-switch-copy">${signIn ? "Need a free account?" : "Already have an account?"} <button data-action="toggle-auth">${signIn ? "Sign up" : "Sign in"}</button></p>
     </section></div>`, null);
   }
   function renderCommandHome() {
