@@ -131,7 +131,17 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       const events = await authRequest("/api/game-time/events", { method: "GET" }, token);
       state.remoteEvents = Array.isArray(events) ? events : [];
       save();
-    } catch { /* Keep the last downloaded event list while offline. */ }
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async function refreshRemoteEvents() {
+    if (state.authMode !== "member") return;
+    const session = await readSecureSession();
+    if (!session?.token) return;
+    const refreshed = await loadRemoteEvents(session.token);
+    if (refreshed && state.route === "command-home") renderCommandHome();
   }
   async function restoreAuthSession() {
     const saved = await readSecureSession();
@@ -201,7 +211,13 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     if (seconds) parts.push(`${seconds} ${seconds === 1 ? "second" : "seconds"}`);
     return parts.join(" and ") || "zero seconds";
   }
-  function route(name) { stopFrame(); state.route = name; save(); render(); }
+  function route(name) {
+    stopFrame();
+    state.route = name;
+    save();
+    render();
+    if (name === "command-home") void refreshRemoteEvents();
+  }
   function nav(active) {
     return `<nav class="bottom-nav" aria-label="Primary navigation">
       <button data-route="command-home" class="${active === "command-home" ? "active" : ""}"><span>⌂</span>Home</button>
@@ -704,6 +720,10 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     if (event.target.id !== "signInForm" && event.target.id !== "signUpForm") return;
     event.preventDefault();
     submitAuthentication(event.target);
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) void refreshRemoteEvents();
   });
 
   state.activity = getLog().slice(-30).reverse();
