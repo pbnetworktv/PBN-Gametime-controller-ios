@@ -108,4 +108,5 @@ test("signed-in members can open their shared PBN events", () => {
   assert.match(app, /My PBN events/);
   assert.match(app, /data-action="open-remote-event"/);
   assert.match(app, /REMOTE_EVENT_OPENED/);
+  assert.match(app, /remoteEventDateLabel/);
 });

@@ -82,6 +82,10 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 
   function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
   function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]); }
+  function remoteEventDateLabel(event) {
+    const date = event.endDate && event.endDate !== event.startDate ? `${event.startDate} – ${event.endDate}` : event.startDate;
+    return [date, event.startTime].filter(Boolean).join(" · ");
+  }
 
   async function readSecureSession() {
     try {
@@ -256,7 +260,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       <section class="command-intro"><span class="eyebrow">EVENT COMMAND</span><h1>What are you running?</h1><p>Choose the fast scrimmage setup or prepare a complete scheduled event.</p></section>
       <button class="command-choice quick" data-action="open-scrimmage"><span class="choice-icon">▶</span><span><strong>START A SCRIMMAGE</strong><small>Pick a format, name the teams, and start playing</small></span><b>›</b></button>
       <button class="command-choice" data-route="event-dashboard"><span class="choice-icon">▤</span><span><strong>SET UP A FULL EVENT</strong><small>Schedule, divisions, fields, staff, and publishing</small></span><b>›</b></button>`}
-      ${state.authMode === "member" ? `<section class="recent-event"><div class="section-title"><h2>My PBN events</h2><span class="status good">SYNCED</span></div>${sharedEvents.length ? sharedEvents.map((item) => `<button class="event-summary" data-action="open-remote-event" data-event-id="${escapeHtml(item.id)}"><div><span class="eyebrow">${escapeHtml(item.status)} · ${escapeHtml(item.visibility)}</span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.startDate)} · ${escapeHtml(item.venue)}</small></div><b>OPEN ›</b></button>`).join("") : `<div class="card empty">No shared events yet. Create a draft from the Game Time tab on PBNetwork.tv.</div>`}</section>` : ""}
+      ${state.authMode === "member" ? `<section class="recent-event"><div class="section-title"><h2>My PBN events</h2><span class="status good">SYNCED</span></div>${sharedEvents.length ? sharedEvents.map((item) => `<button class="event-summary" data-action="open-remote-event" data-event-id="${escapeHtml(item.id)}"><div><span class="eyebrow">${escapeHtml(item.status)} · ${escapeHtml(item.visibility)}</span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(remoteEventDateLabel(item))} · ${escapeHtml(item.venue)}</small></div><b>OPEN ›</b></button>`).join("") : `<div class="card empty">No shared events yet. Create a draft from the Game Time tab on PBNetwork.tv.</div>`}</section>` : ""}
       <section class="recent-event"><div class="section-title"><h2>Local planned event</h2><span class="status warn">${state.event.status.toUpperCase()}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${state.league.name}</span><strong>${state.event.name}</strong><small>${state.event.date} · ${state.event.venue}</small></div><b>CONTINUE ›</b></button></section>`, "command-home", "command-screen");
   }
   function renderLeagues() {
@@ -654,7 +658,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
         ...state.event,
         id: selected.id,
         name: selected.name,
-        date: selected.startDate,
+        date: remoteEventDateLabel(selected),
         venue: selected.venue,
         format: selected.eventType,
         status: selected.status === "DRAFT" ? "Draft" : selected.status
