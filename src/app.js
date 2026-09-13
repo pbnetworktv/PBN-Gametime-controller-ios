@@ -19,6 +19,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     authenticated: false,
     authMode: null,
     member: null,
+    remoteEvents: [],
     route: "login",
     connection: { configured: false, name: "PBN Backend", baseUrl: "" },
     audio: { countdownCue: "field-reference-beep", cueLibraryVersion: 2 },
@@ -80,6 +81,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   let authBusy = false;
 
   function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+  function escapeHtml(value) { return String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" })[character]); }
 
   async function readSecureSession() {
     try {
@@ -116,8 +118,16 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     state.member = session.user;
     state.operator = { name: session.user.screenName || session.user.firstName || session.user.email, role: "PBN Member" };
     state.route = "command-home";
+    await loadRemoteEvents(session.token);
     save();
     render();
+  }
+  async function loadRemoteEvents(token) {
+    try {
+      const events = await authRequest("/api/game-time/events", { method: "GET" }, token);
+      state.remoteEvents = Array.isArray(events) ? events : [];
+      save();
+    } catch { /* Keep the last downloaded event list while offline. */ }
   }
   async function restoreAuthSession() {
     const saved = await readSecureSession();
@@ -146,6 +156,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       state.member = session.user;
       state.operator = { name: session.user.screenName || session.user.firstName || session.user.email, role: "PBN Member" };
       if (state.route === "login") state.route = "command-home";
+      await loadRemoteEvents(session.token);
       save();
     } catch (error) {
       if (error.status === 401) {
@@ -239,12 +250,14 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   }
   function renderCommandHome() {
     const session = state.session || defaultState.session;
+    const sharedEvents = Array.isArray(state.remoteEvents) ? state.remoteEvents : [];
     page(`<div class="command-head"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p></div>
       ${session.active ? `<section class="active-session"><span class="live-dot"></span><div><span class="eyebrow">ACTIVE ${session.type === "scrimmage" ? "SCRIMMAGE" : "EVENT"}</span><h2>${session.label || "Controller session"}</h2><p>Your clock and scores are saved on this device.</p></div><button class="primary" data-route="live-controller">RETURN TO CONTROLLER</button></section>` : `
       <section class="command-intro"><span class="eyebrow">EVENT COMMAND</span><h1>What are you running?</h1><p>Choose the fast scrimmage setup or prepare a complete scheduled event.</p></section>
       <button class="command-choice quick" data-action="open-scrimmage"><span class="choice-icon">▶</span><span><strong>START A SCRIMMAGE</strong><small>Pick a format, name the teams, and start playing</small></span><b>›</b></button>
       <button class="command-choice" data-route="event-dashboard"><span class="choice-icon">▤</span><span><strong>SET UP A FULL EVENT</strong><small>Schedule, divisions, fields, staff, and publishing</small></span><b>›</b></button>`}
-      <section class="recent-event"><div class="section-title"><h2>Planned event</h2><span class="status warn">${state.event.status.toUpperCase()}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${state.league.name}</span><strong>${state.event.name}</strong><small>${state.event.date} · ${state.event.venue}</small></div><b>CONTINUE ›</b></button></section>`, "command-home", "command-screen");
+      ${state.authMode === "member" ? `<section class="recent-event"><div class="section-title"><h2>My PBN events</h2><span class="status good">SYNCED</span></div>${sharedEvents.length ? sharedEvents.map((item) => `<button class="event-summary" data-action="open-remote-event" data-event-id="${escapeHtml(item.id)}"><div><span class="eyebrow">${escapeHtml(item.status)} · ${escapeHtml(item.visibility)}</span><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(item.startDate)} · ${escapeHtml(item.venue)}</small></div><b>OPEN ›</b></button>`).join("") : `<div class="card empty">No shared events yet. Create a draft from the Game Time tab on PBNetwork.tv.</div>`}</section>` : ""}
+      <section class="recent-event"><div class="section-title"><h2>Local planned event</h2><span class="status warn">${state.event.status.toUpperCase()}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${state.league.name}</span><strong>${state.event.name}</strong><small>${state.event.date} · ${state.event.venue}</small></div><b>CONTINUE ›</b></button></section>`, "command-home", "command-screen");
   }
   function renderLeagues() {
     page(`${topbar("My Leagues", "login")}<section class="card hero"><span class="eyebrow">CURRENT ORGANIZATION</span><h2>${state.league.name}</h2><p>${state.league.season} · one event ready for testing</p><button class="primary wide" data-route="league-home">OPEN LEAGUE</button></section><div class="section-title"><h2>Other leagues</h2></div><div class="card empty">Connect the PBN backend to load additional organizations.</div>`, null);
@@ -634,6 +647,21 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     const action = button.dataset.action;
     if (action === "demo-login") { state.authenticated = true; state.authMode = "demo"; logAction("OFFLINE_DEMO_STARTED"); route("command-home"); }
     else if (action === "toggle-auth") { authView = authView === "sign-in" ? "sign-up" : "sign-in"; renderLogin(); }
+    else if (action === "open-remote-event") {
+      const selected = (state.remoteEvents || []).find((item) => item.id === button.dataset.eventId);
+      if (!selected) return toast("That PBN event is no longer available.");
+      state.event = {
+        ...state.event,
+        id: selected.id,
+        name: selected.name,
+        date: selected.startDate,
+        venue: selected.venue,
+        format: selected.eventType,
+        status: selected.status === "DRAFT" ? "Draft" : selected.status
+      };
+      logAction("REMOTE_EVENT_OPENED", { eventId: selected.id });
+      route("event-dashboard");
+    }
     else if (action === "sign-out") signOut();
     else if (action === "delete-account") confirmAccountDeletion();
     else if (action === "confirm-delete-account") deleteAccount();
