@@ -85,3 +85,15 @@ test("base decisions award the team opposite the hit base", () => {
   assert.match(app, /addPoint\(scoringTeamId\)/);
   assert.match(app, /ACTIVE_INACTIVE_SWAPPED/);
 });
+
+test("member sessions persist securely across app launches", () => {
+  assert.match(app, /capacitor-secure-storage/);
+  assert.match(app, /SecureStorage\.setItem/);
+  assert.match(app, /SecureStorage\.getItem/);
+  assert.match(app, /\/api\/mobile-auth\/refresh/);
+  assert.match(app, /\/api\/mobile-auth\/me/);
+  assert.match(app, /refreshWithinMs/);
+  assert.match(app, /Create your account/);
+  assert.match(app, /delete-account/);
+  assert.doesNotMatch(app, /localStorage\.setItem\([^\n]*session\.token/);
+});

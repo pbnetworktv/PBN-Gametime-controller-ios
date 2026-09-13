@@ -1,8 +1,12 @@
+import { SecureStorage } from "@aparajita/capacitor-secure-storage";
+
 (() => {
   "use strict";
 
   const STORAGE_KEY = "pbn_game_time_controller_v3";
   const EVENT_LOG_KEY = "pbn_game_time_action_log_v1";
+  const AUTH_SESSION_KEY = "pbn_member_session_v1";
+  const DEFAULT_API_ORIGIN = "https://www.pbnetwork.tv";
   const $ = (selector) => document.querySelector(selector);
   const app = $("#app");
   const modal = $("#modal");
@@ -13,6 +17,8 @@
   const defaultState = {
     version: 3,
     authenticated: false,
+    authMode: null,
+    member: null,
     route: "login",
     connection: { configured: false, name: "PBN Backend", baseUrl: "" },
     audio: { countdownCue: "field-reference-beep", cueLibraryVersion: 2 },
@@ -70,8 +76,97 @@
   let audioContext = null;
   let cuePlayer = null;
   let cuePlayerName = null;
+  let authView = "sign-in";
+  let authBusy = false;
 
   function save() { localStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
+
+  async function readSecureSession() {
+    try {
+      const value = await SecureStorage.getItem(AUTH_SESSION_KEY);
+      return value ? JSON.parse(value) : null;
+    } catch { return null; }
+  }
+  async function writeSecureSession(session) {
+    await SecureStorage.setItem(AUTH_SESSION_KEY, JSON.stringify(session));
+  }
+  async function clearSecureSession() {
+    try { await SecureStorage.removeItem(AUTH_SESSION_KEY); } catch { /* already absent */ }
+  }
+  function authApiOrigin() {
+    const configured = state.connection?.baseUrl?.trim();
+    return (configured || DEFAULT_API_ORIGIN).replace(/\/$/, "");
+  }
+  async function authRequest(path, options = {}, token = null) {
+    const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+    if (token) headers.Authorization = `Bearer ${token}`;
+    const response = await fetch(`${authApiOrigin()}${path}`, { ...options, headers });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(payload.error || "PBN account request failed.");
+      error.status = response.status;
+      throw error;
+    }
+    return payload.data;
+  }
+  async function acceptAuthSession(session) {
+    await writeSecureSession(session);
+    state.authenticated = true;
+    state.authMode = "member";
+    state.member = session.user;
+    state.operator = { name: session.user.screenName || session.user.firstName || session.user.email, role: "PBN Member" };
+    state.route = "command-home";
+    save();
+    render();
+  }
+  async function restoreAuthSession() {
+    const saved = await readSecureSession();
+    if (!saved?.token) {
+      if (state.authMode === "member") {
+        state.authenticated = false;
+        state.authMode = null;
+        state.member = null;
+        state.route = "login";
+        save();
+      }
+      render();
+      return;
+    }
+    try {
+      let session = saved;
+      const refreshWithinMs = 7 * 24 * 60 * 60 * 1000;
+      if (!saved.expiresAt || new Date(saved.expiresAt).getTime() - Date.now() <= refreshWithinMs) {
+        const refreshed = await authRequest("/api/mobile-auth/refresh", { method: "POST" }, saved.token);
+        session = refreshed;
+        await writeSecureSession(session);
+      } else {
+        const current = await authRequest("/api/mobile-auth/me", { method: "GET" }, saved.token);
+        session = { ...saved, ...current };
+      }
+      state.authenticated = true;
+      state.authMode = "member";
+      state.member = session.user;
+      state.operator = { name: session.user.screenName || session.user.firstName || session.user.email, role: "PBN Member" };
+      if (state.route === "login") state.route = "command-home";
+      save();
+    } catch (error) {
+      if (error.status === 401) {
+        await clearSecureSession();
+        state.authenticated = false;
+        state.authMode = null;
+        state.member = null;
+        state.route = "login";
+        save();
+      } else if (saved.user) {
+        state.authenticated = true;
+        state.authMode = "member";
+        state.member = saved.user;
+        if (state.route === "login") state.route = "command-home";
+        save();
+      }
+    }
+    render();
+  }
   function getLog() { try { return JSON.parse(localStorage.getItem(EVENT_LOG_KEY)) || []; } catch { return []; } }
   function logAction(type, payload = {}) {
     const entry = { id: crypto.randomUUID?.() || `${Date.now()}-${Math.random()}`, at: now(), type, payload, syncStatus: state.connection.configured ? "pending" : "local-only" };
@@ -131,7 +226,20 @@
   function render() { (pageDefinitions[state.route] || renderLogin)(); }
 
   function renderLogin() {
-    page(`<div style="padding-top:18vh;text-align:center"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p><section class="card hero" style="text-align:left;margin-top:42px"><span class="eyebrow">OPERATOR ACCESS</span><h2>Run the event.</h2><p>Sign in when the PBN backend is ready, or enter the safe offline demo now.</p><button class="primary wide" data-action="demo-login">ENTER OFFLINE DEMO</button><button class="secondary wide" style="margin-top:10px" data-action="connection">CONNECT PBN BACKEND</button></section></div>`, null);
+    const signIn = authView === "sign-in";
+    page(`<div class="auth-screen"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p><section class="card auth-card"><span class="eyebrow">PBN ACCOUNT</span><h2>${signIn ? "Welcome back." : "Create your account."}</h2><p class="muted">${signIn ? "Sign in once. This device will keep you signed in securely." : "One free PBN account works across PBN apps and the website."}</p>
+      <form id="${signIn ? "signInForm" : "signUpForm"}" class="auth-form">
+        ${signIn ? "" : `<div class="auth-name-row"><div class="field"><label>First name</label><input id="authFirstName" autocomplete="given-name" required maxlength="40"></div><div class="field"><label>Last name</label><input id="authLastName" autocomplete="family-name" required maxlength="40"></div></div>`}
+        <div class="field"><label>Email</label><input id="authEmail" type="email" autocomplete="email" inputmode="email" required></div>
+        <div class="field"><label>Password</label><input id="authPassword" type="password" autocomplete="${signIn ? "current-password" : "new-password"}" minlength="8" required></div>
+        ${signIn ? "" : `<div class="field"><label>Confirm password</label><input id="authConfirmPassword" type="password" autocomplete="new-password" minlength="8" required></div><label class="terms-check"><input id="authTerms" type="checkbox" required><span>I agree to the <a href="https://www.pbnetwork.tv/terms" target="_blank">Terms</a> and <a href="https://www.pbnetwork.tv/privacy" target="_blank">Privacy Policy</a>.</span></label>`}
+        <p id="authError" class="auth-error" role="alert"></p>
+        <button class="primary wide" type="submit" ${authBusy ? "disabled" : ""}>${authBusy ? "PLEASE WAIT…" : signIn ? "SIGN IN" : "CREATE FREE ACCOUNT"}</button>
+      </form>
+      <button class="auth-switch" data-action="toggle-auth">${signIn ? "New to PBN? Create an account" : "Already have an account? Sign in"}</button>
+      <div class="auth-divider"><span>or</span></div>
+      <button class="secondary wide" data-action="demo-login">ENTER OFFLINE DEMO</button>
+    </section></div>`, null);
   }
   function renderCommandHome() {
     const session = state.session || defaultState.session;
@@ -228,7 +336,7 @@
   function renderStaff() { page(`${topbar("Staff")}<div class="list">${state.staff.map(s => `<button class="list-row"><div><strong>${s.name}</strong><small>${s.role}</small></div><span>›</span></button>`).join("")}</div><div class="card empty" style="margin-top:12px">Backend connection will provide invitations and permission assignments.</div>`, "event-dashboard"); }
   function renderActivity() { const log = getLog(); page(`${topbar("Activity Log")}<section class="card"><span class="eyebrow">APPEND-ONLY LOCAL AUDIT</span><div class="list">${log.length ? log.slice().reverse().map(a => `<div class="list-row"><div><strong>${a.type.replaceAll("_", " ")}</strong><small>${new Date(a.at).toLocaleString()}</small></div><span class="status">${a.syncStatus}</span></div>`).join("") : `<div class="empty">Actions will appear here immediately, even offline.</div>`}</div></section>`, "event-dashboard"); }
   function renderPublishing() { page(`${topbar("Publishing Center")}<section class="card"><span class="eyebrow">PUBLIC OUTPUTS</span><div class="list"><div class="list-row"><div><strong>Public schedule</strong><small>Awaiting backend URL</small></div><span class="status warn">NOT CONNECTED</span></div><div class="list-row"><div><strong>Live scores</strong><small>Local controller state ready</small></div><span class="status good">READY</span></div><div class="list-row"><div><strong>PBNetwork.tv overlay</strong><small>Contract placeholder included</small></div><span class="status">SCAFFOLDED</span></div></div></section>`, "event-dashboard"); }
-  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">AUDIO CUES</span><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="field-reference-beep" ${state.audio?.countdownCue === "field-reference-beep" ? "selected" : ""}>Field controller reference</option><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : "No backend configured. All test actions remain safely on this device."}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
+  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">ACCOUNT</span><h2>${state.authMode === "member" ? (state.member?.screenName || state.member?.email || "PBN Member") : "Offline demo"}</h2><p class="muted">${state.authMode === "member" ? `${state.member?.email || ""} · securely remembered on this device` : "No PBN account is connected to this local demo."}</p>${state.authMode === "member" ? `<div class="button-row"><button class="secondary" data-action="sign-out">SIGN OUT</button><button class="danger" data-action="delete-account">DELETE ACCOUNT</button></div>` : ""}</section><section class="card" style="margin-top:12px"><span class="eyebrow">AUDIO CUES</span><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="field-reference-beep" ${state.audio?.countdownCue === "field-reference-beep" ? "selected" : ""}>Field controller reference</option><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : `Account service: ${DEFAULT_API_ORIGIN}`}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
 
   function startFrame() { stopFrame(); const tick = () => { updateClocks(); frame = requestAnimationFrame(tick); }; frame = requestAnimationFrame(tick); }
   function stopFrame() { if (frame) cancelAnimationFrame(frame); frame = null; }
@@ -463,6 +571,64 @@
     const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "pbn-event-action-log.json"; a.click(); URL.revokeObjectURL(url); toast("Local action log exported.");
   }
 
+  async function submitAuthentication(form) {
+    if (authBusy) return;
+    authBusy = true;
+    renderLogin();
+    const isSignUp = form.id === "signUpForm";
+    const body = {
+      email: form.querySelector("#authEmail")?.value.trim(),
+      password: form.querySelector("#authPassword")?.value,
+    };
+    if (isSignUp) Object.assign(body, {
+      firstName: form.querySelector("#authFirstName")?.value.trim(),
+      lastName: form.querySelector("#authLastName")?.value.trim(),
+      confirmPassword: form.querySelector("#authConfirmPassword")?.value,
+      agreeToTerms: Boolean(form.querySelector("#authTerms")?.checked),
+    });
+    try {
+      const session = await authRequest(`/api/mobile-auth/${isSignUp ? "sign-up" : "sign-in"}`, { method: "POST", body: JSON.stringify(body) });
+      await acceptAuthSession(session);
+      toast(isSignUp ? "PBN account created." : "Signed in securely.");
+    } catch (error) {
+      authBusy = false;
+      renderLogin();
+      const errorElement = $("#authError");
+      if (errorElement) errorElement.textContent = error.message || "Unable to sign in right now.";
+    }
+    authBusy = false;
+  }
+
+  async function signOut() {
+    const session = await readSecureSession();
+    try {
+      if (session?.token) await authRequest("/api/mobile-auth/sign-out", { method: "POST" }, session.token);
+    } catch { /* local sign-out must still complete */ }
+    await clearSecureSession();
+    state.authenticated = false;
+    state.authMode = null;
+    state.member = null;
+    state.route = "login";
+    save();
+    render();
+  }
+
+  function confirmAccountDeletion() {
+    modalBody.innerHTML = `<h2>Delete PBN account?</h2><p class="muted">Your account will be disabled immediately and scheduled for permanent deletion. This signs you out everywhere.</p><div class="button-row"><button class="secondary" value="cancel">CANCEL</button><button class="danger" type="button" data-action="confirm-delete-account">DELETE ACCOUNT</button></div>`;
+    modal.showModal();
+  }
+
+  async function deleteAccount() {
+    const session = await readSecureSession();
+    if (!session?.token) return signOut();
+    try {
+      await authRequest("/api/mobile-auth/delete-account", { method: "DELETE" }, session.token);
+      modal.close();
+      await signOut();
+      toast("Account scheduled for deletion.");
+    } catch (error) { toast(error.message || "Account deletion failed."); }
+  }
+
   document.addEventListener("click", (event) => {
     const button = event.target.closest("button"); if (!button) return;
     if (button.dataset.route) return route(button.dataset.route);
@@ -470,7 +636,11 @@
       setBreakClock(Number(button.dataset.clockSeconds) * 1000); return;
     }
     const action = button.dataset.action;
-    if (action === "demo-login") { state.authenticated = true; logAction("OFFLINE_DEMO_STARTED"); route("command-home"); }
+    if (action === "demo-login") { state.authenticated = true; state.authMode = "demo"; logAction("OFFLINE_DEMO_STARTED"); route("command-home"); }
+    else if (action === "toggle-auth") { authView = authView === "sign-in" ? "sign-up" : "sign-in"; renderLogin(); }
+    else if (action === "sign-out") signOut();
+    else if (action === "delete-account") confirmAccountDeletion();
+    else if (action === "confirm-delete-account") deleteAccount();
     else if (action === "open-scrimmage") showScrimmageSetup();
     else if (action === "start-scrimmage") startScrimmage();
     else if (action === "run-event") runEvent();
@@ -491,7 +661,7 @@
     else if (action === "set-default-mode") { clockPickerMode = "default"; renderClockPicker(); }
     else if (action === "score-plus" || action === "score-minus") { snapshotController(); const side = button.dataset.side; const match = state.controller.activeMatch; const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId; const key = teamId === match.leftTeamId ? "leftScore" : "rightScore"; match[key] = Math.max(0, match[key] + (action === "score-plus" ? 1 : -1)); logAction("MANUAL_SCORE_CORRECTION", { side, teamId, delta: action === "score-plus" ? 1 : -1 }); renderController(); }
     else if (action === "export-log") exportLog();
-    else if (action === "reset-all") { localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(EVENT_LOG_KEY); state = clone(defaultState); render(); }
+    else if (action === "reset-all") { const auth = { authenticated: state.authenticated, authMode: state.authMode, member: state.member, operator: state.operator, route: state.authenticated ? "command-home" : "login" }; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(EVENT_LOG_KEY); state = { ...clone(defaultState), ...auth }; save(); render(); }
     else if (action === "finalize-playoffs") toast("Qualifying is still active. Projection was not finalized.");
     else if (action === "team-detail") toast("Roster details belong to the future player app.");
   });
@@ -502,11 +672,18 @@
     if (event.target.id === "countdownCue") { state.audio = { ...(state.audio || {}), countdownCue: event.target.value }; save(); playCountdownCue(); }
   });
 
+  document.addEventListener("submit", (event) => {
+    if (event.target.id !== "signInForm" && event.target.id !== "signUpForm") return;
+    event.preventDefault();
+    submitAuthentication(event.target);
+  });
+
   state.activity = getLog().slice(-30).reverse();
   if (state.controller.activeAnchor) {
     const remaining = anchoredRemaining(state.controller.activeAnchor);
     if (state.controller.activeAnchor.kind === "break") state.controller.breakMs = remaining;
     else state.controller.gameMs = remaining;
   }
-  render();
+  app.innerHTML = `<div class="auth-loading"><div class="brand">PBN</div><p>Restoring secure session…</p></div>`;
+  restoreAuthSession();
 })();
