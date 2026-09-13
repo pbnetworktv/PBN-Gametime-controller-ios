@@ -37,7 +37,10 @@ test("break clock supports announcements, countdown cues, and separate default m
   assert.match(app, /set-default-mode/);
 });
 
-test("three selectable countdown sounds are bundled into settings", () => {
+test("reference and alternate countdown sounds are bundled into settings", () => {
+  assert.match(app, /field-reference-beep/);
+  assert.match(app, /Field controller reference/);
+  assert.match(app, /cueLibraryVersion: 2/);
   assert.match(app, /scoreboard-beep/);
   assert.match(app, /referee-timer-beep/);
   assert.match(app, /tournament-beep/);

@@ -15,7 +15,7 @@
     authenticated: false,
     route: "login",
     connection: { configured: false, name: "PBN Backend", baseUrl: "" },
-    audio: { countdownCue: "scoreboard-beep" },
+    audio: { countdownCue: "field-reference-beep", cueLibraryVersion: 2 },
     operator: { name: "Demo Operator", role: "Event Director" },
     session: { active: false, type: null, label: null, format: null, pointLimit: null, deckStyle: null },
     league: { id: "league-demo", name: "PBN Demo League", season: "2026 Season" },
@@ -57,7 +57,10 @@
     try {
       const saved = JSON.parse(localStorage.getItem(STORAGE_KEY));
       if (!saved || saved.version !== 3) return clone(defaultState);
-      return { ...clone(defaultState), ...saved, controller: { ...clone(defaultState.controller), ...(saved.controller || {}) } };
+      const migratedAudio = saved.audio?.cueLibraryVersion === 2
+        ? { ...clone(defaultState.audio), ...saved.audio }
+        : clone(defaultState.audio);
+      return { ...clone(defaultState), ...saved, audio: migratedAudio, controller: { ...clone(defaultState.controller), ...(saved.controller || {}) } };
     } catch { return clone(defaultState); }
   }
 
@@ -225,7 +228,7 @@
   function renderStaff() { page(`${topbar("Staff")}<div class="list">${state.staff.map(s => `<button class="list-row"><div><strong>${s.name}</strong><small>${s.role}</small></div><span>›</span></button>`).join("")}</div><div class="card empty" style="margin-top:12px">Backend connection will provide invitations and permission assignments.</div>`, "event-dashboard"); }
   function renderActivity() { const log = getLog(); page(`${topbar("Activity Log")}<section class="card"><span class="eyebrow">APPEND-ONLY LOCAL AUDIT</span><div class="list">${log.length ? log.slice().reverse().map(a => `<div class="list-row"><div><strong>${a.type.replaceAll("_", " ")}</strong><small>${new Date(a.at).toLocaleString()}</small></div><span class="status">${a.syncStatus}</span></div>`).join("") : `<div class="empty">Actions will appear here immediately, even offline.</div>`}</div></section>`, "event-dashboard"); }
   function renderPublishing() { page(`${topbar("Publishing Center")}<section class="card"><span class="eyebrow">PUBLIC OUTPUTS</span><div class="list"><div class="list-row"><div><strong>Public schedule</strong><small>Awaiting backend URL</small></div><span class="status warn">NOT CONNECTED</span></div><div class="list-row"><div><strong>Live scores</strong><small>Local controller state ready</small></div><span class="status good">READY</span></div><div class="list-row"><div><strong>PBNetwork.tv overlay</strong><small>Contract placeholder included</small></div><span class="status">SCAFFOLDED</span></div></div></section>`, "event-dashboard"); }
-  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">AUDIO CUES</span><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : "No backend configured. All test actions remain safely on this device."}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
+  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">AUDIO CUES</span><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="field-reference-beep" ${state.audio?.countdownCue === "field-reference-beep" ? "selected" : ""}>Field controller reference</option><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : "No backend configured. All test actions remain safely on this device."}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
 
   function startFrame() { stopFrame(); const tick = () => { updateClocks(); frame = requestAnimationFrame(tick); }; frame = requestAnimationFrame(tick); }
   function stopFrame() { if (frame) cancelAnimationFrame(frame); frame = null; }
@@ -267,7 +270,7 @@
       playCountdownCue();
     }
   }
-  function playCountdownCue() { playCue(state.audio?.countdownCue || "scoreboard-beep", () => tone(1450, .16)); }
+  function playCountdownCue() { playCue(state.audio?.countdownCue || "field-reference-beep", () => tone(1450, .16)); }
   function getCuePlayer(name) {
     if (!cuePlayer) {
       cuePlayer = new Audio();
@@ -283,7 +286,7 @@
     return cuePlayer;
   }
   function unlockCueAudio() {
-    const player = getCuePlayer(state.audio?.countdownCue || "scoreboard-beep");
+    const player = getCuePlayer(state.audio?.countdownCue || "field-reference-beep");
     player.volume = 0;
     const attempt = player.play();
     if (!attempt?.then) { player.volume = 1; return Promise.resolve(); }
