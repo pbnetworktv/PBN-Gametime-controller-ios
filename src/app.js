@@ -239,7 +239,7 @@
       announceCountdown(remaining);
       if (remaining <= 0) {
         c.breakMs = 0;
-        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; playCue("game-start-horn", synthHorn); speak("Game started"); }
+        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; playCue("game-start-horn", synthHorn, () => speak("Game started")); }
         c.phase = "POINT_LIVE";
         startAnchor("game", c.gameMs);
         logAction("GAME_CLOCK_AUTO_STARTED", { gameMs: c.gameMs });
@@ -282,15 +282,16 @@
       if (attempt?.then) attempt.then(() => { player.pause(); player.currentTime = 0; player.volume = 1; }).catch(() => { player.volume = 1; });
     });
   }
-  function playCue(name, fallback) {
+  function playCue(name, fallback, onFinished) {
     try {
       const player = getCuePlayer(name);
       player.pause();
       player.currentTime = 0;
       player.volume = 1;
+      player.onended = onFinished || null;
       const attempt = player.play();
-      if (attempt?.catch) attempt.catch(() => fallback?.());
-    } catch { fallback?.(); }
+      if (attempt?.catch) attempt.catch(() => { fallback?.(); if (onFinished) setTimeout(onFinished, 2050); });
+    } catch { fallback?.(); if (onFinished) setTimeout(onFinished, 2050); }
   }
   function ensureAudio() {
     try {
@@ -308,8 +309,8 @@
     try {
       const ctx = ensureAudio(); if (!ctx) return;
       const gain = ctx.createGain(); gain.gain.value = .68; gain.connect(ctx.destination);
-      [440, 554].forEach((frequency) => { const oscillator = ctx.createOscillator(); oscillator.type = "sawtooth"; oscillator.frequency.value = frequency; oscillator.connect(gain); oscillator.start(); oscillator.stop(ctx.currentTime + 1.7); });
-      gain.gain.setValueAtTime(.68, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + 1.7);
+      [260, 330].forEach((frequency) => { const oscillator = ctx.createOscillator(); oscillator.type = "sawtooth"; oscillator.frequency.value = frequency; oscillator.connect(gain); oscillator.start(); oscillator.stop(ctx.currentTime + 2); });
+      gain.gain.setValueAtTime(.68, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + 2);
     } catch { /* Audio is an enhancement. */ }
   }
   function speak(text) { try { speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.rate = .86; utterance.volume = 1; speechSynthesis.speak(utterance); } catch { /* Audio is an enhancement. */ } }
