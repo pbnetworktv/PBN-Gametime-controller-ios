@@ -89,6 +89,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 
   let state = loadState();
   let frame = null;
+  let pointConfirmationTimer = null;
   let clockPickerMode = "jump";
   let audioContext = null;
   let cuePlayer = null;
@@ -381,7 +382,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       ${singleDeck ? `<div class="controller-mode">SINGLE DECK SCRIMMAGE</div>` : `<section class="scorebug"><span class="team">${state.controller.inactiveMatch.leftTeam}</span><strong class="score">${state.controller.inactiveMatch.leftScore}</strong><span class="clock">${formatMs(state.controller.inactiveMatch.gameMs)}</span><strong class="score">${state.controller.inactiveMatch.rightScore}</strong><span class="team">${state.controller.inactiveMatch.rightTeam}</span></section>`}
       <section class="active-game"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong>${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong>${scoreForPhysical("right")}</strong></div></div></section>
       <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
-      ${controllerMainButton()}${state.controller.phase === "POINT_STOPPED_WAITING_DECISION" ? decisionPanel() : ""}
+      ${controllerMainButton()}${state.controller.phase === "POINT_STOPPED_WAITING_DECISION" ? decisionPanel() : ""}${state.controller.phase === "POINT_CONFIRMED" ? pointConfirmationPanel() : ""}
       ${singleDeck ? "" : `<section class="controller-card"><h2>NEXT UP</h2>${nextRows}</section>`}
       <div class="controller-nav"><button data-route="command-home">HOME</button>${state.session?.type === "event" ? `<button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button>` : ""}</div></div>`, null, "controller-screen");
     startFrame();
@@ -400,6 +401,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     return `<button class="main-command base" disabled>POINT STOPPED</button>`;
   }
   function decisionPanel() { return `<section class="decision"><h3>${state.controller.pendingBaseSide?.toUpperCase()} BASE · DECISION</h3><div class="decision-grid"><button class="approve" data-action="approve-point">APPROVE POINT</button><button class="reverse" data-action="reverse-point">REVERSE POINT</button><button class="no-point" data-action="no-point">NO POINT</button></div><button class="secondary wide" style="margin-top:8px;min-height:38px" data-action="undo">UNDO LAST ACTION</button></section>`; }
+  function pointConfirmationPanel() { const confirmation = state.controller.pointConfirmation || {}; return `<section class="decision"><h3>${escapeHtml(confirmation.label || "POINT RECORDED")}</h3><p class="muted">Score updated. Advancing in 3 seconds…</p><button class="secondary wide" style="margin-top:8px;min-height:38px" data-action="undo">UNDO LAST ACTION</button></section>`; }
 
   function renderStandings() { page(`${topbar("Scores & Standings")}<section class="card"><span class="eyebrow">${escapeHtml(state.event.format || "EVENT")} · EVENT ID ${escapeHtml(state.activeEventId || state.event.id)}</span><div class="list">${state.standings.length ? state.standings.map((s,i) => `<div class="list-row"><strong style="width:22px">${i+1}</strong><div><strong>${s.team}</strong><small>${s.w} W · ${s.l} L</small></div><span class="status ${i<2?"good":""}">${s.diff >= 0 ? "+" : ""}${s.diff}</span></div>`).join("") : `<div class="empty">No scores have been recorded for this event.</div>`}</div></section>`, "event-dashboard"); }
   function renderPlayoffs() {
@@ -553,6 +555,23 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     }
     c.pointHistory.push({ at: now(), decision: kind, baseSide: side, scoringTeamId, scoringTeam, gameMs: c.gameMs });
     c.activeMatch.gameMs = c.gameMs;
+    c.pendingBaseSide = null;
+    c.phase = "POINT_CONFIRMED";
+    c.pointConfirmation = {
+      kind,
+      scoringTeamId,
+      scoringTeam,
+      baseSide: side,
+      label: kind === "approve" ? `POINT APPROVED · ${scoringTeam}` : kind === "reverse" ? "POINT REVERSED" : "NO POINT"
+    };
+    logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { scoringTeamId, scoringTeam, baseSide: side });
+    renderController();
+    clearTimeout(pointConfirmationTimer);
+    pointConfirmationTimer = setTimeout(finalizePointDecision, 3000);
+  }
+  function finalizePointDecision() {
+    const c = state.controller;
+    if (c.phase !== "POINT_CONFIRMED") return;
     if (state.session?.deckStyle === "split") {
       const completedMatch = c.activeMatch;
       c.activeMatch = c.inactiveMatch;
@@ -560,9 +579,17 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       c.gameMs = c.activeMatch.gameMs;
       logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id });
     }
-    c.pendingBaseSide = null; c.breakMs = c.breakDefaultMs; c.phase = "BREAK_RUNNING"; c.lastAnnouncement = null; startAnchor("break", c.breakMs); logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { scoringTeamId, scoringTeam, baseSide: side }); renderController();
+    c.pointConfirmation = null;
+    c.breakMs = c.breakDefaultMs;
+    c.phase = "BREAK_RUNNING";
+    c.lastAnnouncement = null;
+    startAnchor("break", c.breakMs);
+    save();
+    renderController();
   }
   function undo() {
+    clearTimeout(pointConfirmationTimer);
+    pointConfirmationTimer = null;
     const undoStack = state.controller.undoStack;
     const snapshot = undoStack.pop();
     if (!snapshot) return toast("Nothing to undo.");
