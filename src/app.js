@@ -90,6 +90,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   let state = loadState();
   let frame = null;
   let pointConfirmationTimer = null;
+  let sideSwapTimer = null;
   let clockPickerMode = "jump";
   let audioContext = null;
   let cuePlayer = null;
@@ -380,7 +381,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       : state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("");
     page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p></header>
       ${singleDeck ? `<div class="controller-mode">SINGLE DECK SCRIMMAGE</div>` : `<section class="scorebug"><span class="team">${state.controller.inactiveMatch.leftTeam}</span><strong class="score">${state.controller.inactiveMatch.leftScore}</strong><span class="clock">${formatMs(state.controller.inactiveMatch.gameMs)}</span><strong class="score">${state.controller.inactiveMatch.rightScore}</strong><span class="team">${state.controller.inactiveMatch.rightTeam}</span></section>`}
-      <section class="active-game"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong>${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong>${scoreForPhysical("right")}</strong></div></div></section>
+      <section class="active-game ${state.controller.sideSwapFading ? "side-swap-fade" : ""}"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "left" ? "score-flash" : ""}">${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "right" ? "score-flash" : ""}">${scoreForPhysical("right")}</strong></div></div></section>
       <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
       ${controllerMainButton()}${state.controller.phase === "POINT_STOPPED_WAITING_DECISION" ? decisionPanel() : ""}${state.controller.phase === "POINT_CONFIRMED" ? pointConfirmationPanel() : ""}
       ${singleDeck ? "" : `<section class="controller-card"><h2>NEXT UP</h2>${nextRows}</section>`}
@@ -558,38 +559,48 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       scoringTeamId,
       scoringTeam,
       baseSide: side,
+      scoringPhysicalSide: kind === "approve" ? scoringSide : kind === "reverse" ? (scoringSide === "left" ? "right" : "left") : null,
       label: kind === "approve" ? `POINT APPROVED · ${scoringTeam}` : kind === "reverse" ? "POINT REVERSED" : "NO POINT"
     };
     logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { scoringTeamId, scoringTeam, baseSide: side });
     renderController();
     clearTimeout(pointConfirmationTimer);
-    pointConfirmationTimer = setTimeout(finalizePointDecision, 3000);
+    pointConfirmationTimer = setTimeout(finalizePointDecision, 2600);
   }
   function finalizePointDecision() {
     const c = state.controller;
     if (c.phase !== "POINT_CONFIRMED") return;
-    if (c.pointConfirmation?.kind !== "no_point") {
-      [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
-      [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
-    }
-    if (state.session?.deckStyle === "split") {
-      const completedMatch = c.activeMatch;
-      c.activeMatch = c.inactiveMatch;
-      c.inactiveMatch = completedMatch;
-      c.gameMs = c.activeMatch.gameMs;
-      logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id });
-    }
-    c.pointConfirmation = null;
-    c.breakMs = c.breakDefaultMs;
-    c.phase = "BREAK_RUNNING";
-    c.lastAnnouncement = null;
-    startAnchor("break", c.breakMs);
-    save();
+    c.sideSwapFading = true;
     renderController();
+    clearTimeout(sideSwapTimer);
+    sideSwapTimer = setTimeout(() => {
+      if (c.phase !== "POINT_CONFIRMED") return;
+      if (c.pointConfirmation?.kind !== "no_point") {
+        [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
+        [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
+      }
+      if (state.session?.deckStyle === "split") {
+        const completedMatch = c.activeMatch;
+        c.activeMatch = c.inactiveMatch;
+        c.inactiveMatch = completedMatch;
+        c.gameMs = c.activeMatch.gameMs;
+        logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id });
+      }
+      c.pointConfirmation = null;
+      c.sideSwapFading = false;
+      c.breakMs = c.breakDefaultMs;
+      c.phase = "BREAK_RUNNING";
+      c.lastAnnouncement = null;
+      startAnchor("break", c.breakMs);
+      save();
+      renderController();
+    }, 300);
   }
   function undo() {
     clearTimeout(pointConfirmationTimer);
+    clearTimeout(sideSwapTimer);
     pointConfirmationTimer = null;
+    sideSwapTimer = null;
     const undoStack = state.controller.undoStack;
     const snapshot = undoStack.pop();
     if (!snapshot) return toast("Nothing to undo.");
