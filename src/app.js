@@ -549,10 +549,6 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       addPoint(scoringTeamId);
     }
     if (kind === "reverse") { addPoint(reversedTeamId); speak("Point reversed"); }
-    if (kind !== "no_point") {
-      [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
-      [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
-    }
     c.pointHistory.push({ at: now(), decision: kind, baseSide: side, scoringTeamId, scoringTeam, gameMs: c.gameMs });
     c.activeMatch.gameMs = c.gameMs;
     c.pendingBaseSide = null;
@@ -572,6 +568,10 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   function finalizePointDecision() {
     const c = state.controller;
     if (c.phase !== "POINT_CONFIRMED") return;
+    if (c.pointConfirmation?.kind !== "no_point") {
+      [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
+      [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
+    }
     if (state.session?.deckStyle === "split") {
       const completedMatch = c.activeMatch;
       c.activeMatch = c.inactiveMatch;
