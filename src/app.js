@@ -1,4 +1,5 @@
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
+import { raceToComplete } from "./controller-rules.js";
 
 (() => {
   "use strict";
@@ -97,6 +98,41 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   let cuePlayerName = null;
   let authView = "sign-in";
   let authBusy = false;
+  let syncTimer = null;
+  let syncBusy = false;
+  let lastClockPersist = 0;
+  const remoteRevisions = new Map();
+
+  function queueControllerSync() {
+    if (state.authMode !== "member" || !state.remoteEvents.some(item => item.id === state.activeEventId)) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(() => void flushControllerSync(), 450);
+  }
+  async function flushControllerSync() {
+    if (syncBusy) { queueControllerSync(); return; }
+    const eventId = state.activeEventId;
+    if (!eventId || !remoteRevisions.has(eventId)) return;
+    const session = await readSecureSession();
+    if (!session?.token) return;
+    syncBusy = true;
+    try {
+      captureActiveEventWorkspace();
+      const snapshot = clone(state.eventWorkspaces[eventId]);
+      const result = await authRequest(`/api/game-time/player/controller/${encodeURIComponent(eventId)}`, { method: "PUT", body: JSON.stringify({ revision: remoteRevisions.get(eventId), snapshot }) }, session.token);
+      remoteRevisions.set(eventId, result.revision);
+      state.sync.lastSync = now(); state.sync.pending = 0; state.sync.error = null; save();
+    } catch (error) { state.sync.error = error.message; state.sync.pending = 1; save(); if (error.status === 409) toast(error.message); }
+    finally { syncBusy = false; }
+  }
+  async function restoreControllerWorkspace(eventId) {
+    const session = await readSecureSession();
+    if (!session?.token) return;
+    try {
+      const saved = await authRequest(`/api/game-time/player/controller/${encodeURIComponent(eventId)}`, { method: "GET" }, session.token);
+      remoteRevisions.set(eventId, saved?.revision ?? 0);
+      if (saved?.snapshot) state.eventWorkspaces[eventId] = saved.snapshot;
+    } catch (error) { toast(`Controller is local until connection is restored: ${error.message}`); }
+  }
 
   function captureActiveEventWorkspace() {
     const eventId = state.activeEventId;
@@ -167,11 +203,12 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   }
   async function loadRemoteEvents(token) {
     try {
-      const events = await authRequest("/api/game-time/events", { method: "GET" }, token);
+      const events = await authRequest("/api/game-time/player/controller-events", { method: "GET" }, token);
       state.remoteEvents = Array.isArray(events) ? events : [];
       save();
       return true;
-    } catch {
+    } catch (error) {
+      state.sync.error = error.message || "Unable to load shared events.";
       return false;
     }
   }
@@ -237,6 +274,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     state.activity = log.slice(-30).reverse();
     if (state.connection.configured) state.sync.pending += 1;
     save();
+    queueControllerSync();
     return entry;
   }
   function getEventLog(eventId = state.activeEventId || state.event?.id) {
@@ -268,7 +306,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       <button data-route="settings" class="${active === "settings" ? "active" : ""}"><span>⚙</span>Settings</button>
     </nav>`;
   }
-  function topbar(title, back = "event-dashboard") { return `<header class="topbar"><button class="icon-btn" data-route="${back}" aria-label="Back">←</button><h1>${title}</h1><span class="status ${state.connection.configured ? "good" : "warn"}">${state.connection.configured ? "SYNCED" : "OFFLINE"}</span></header>`; }
+  function topbar(title, back = "event-dashboard") { const saved = Boolean(state.sync.lastSync) && !state.sync.error && !state.sync.pending; return `<header class="topbar"><button class="icon-btn" data-route="${back}" aria-label="Back">←</button><h1>${title}</h1><span class="status ${saved ? "good" : "warn"}">${saved ? "SAVED" : state.sync.error ? "SYNC ERROR" : "LOCAL"}</span></header>`; }
   function page(content, active, className = "") { app.innerHTML = `<div class="app-shell"><section class="screen ${className}">${content}</section>${active ? nav(active) : ""}</div>`; }
 
   const pageDefinitions = {
@@ -395,6 +433,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   }
   function controllerMainButton() {
     const phase = state.controller.phase;
+    if (phase === "MATCH_COMPLETE") return `<section class="decision"><h3>MATCH COMPLETE</h3><p>Final score ${state.controller.activeMatch.leftScore} — ${state.controller.activeMatch.rightScore}</p><p>PBN career score: pending scoring rules.</p></section>`;
     if (phase === "READY") return `<button class="main-command" data-action="start-break">▶ START BREAK</button>`;
     if (phase === "BREAK_PAUSED") return `<button class="main-command base" disabled><span>BREAK PAUSED</span><small>PRESS RESUME TO CONTINUE</small></button>`;
     if (phase === "POINT_LIVE" || phase === "GAME_PAUSED") return `<div class="base-pair"><button class="main-command base" data-action="base" data-side="left"><span>⚑ LEFT BASE</span><small>STOP GAME CLOCK</small></button><button class="main-command base" data-action="base" data-side="right"><span>RIGHT BASE ⚑</span><small>STOP GAME CLOCK</small></button></div>`;
@@ -443,7 +482,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       const el = $("#gameClock"); if (el) el.textContent = formatMs(remaining);
       if (remaining <= 0) { c.gameMs = 0; c.phase = "MATCH_COMPLETE"; c.activeAnchor = null; logAction("GAME_CLOCK_EXPIRED"); save(); renderController(); }
     }
-    save();
+    if (Date.now() - lastClockPersist >= 1000) { lastClockPersist = Date.now(); save(); }
   }
   function announceCountdown(ms) {
     const seconds = Math.ceil(ms / 1000);
@@ -570,6 +609,10 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   function finalizePointDecision() {
     const c = state.controller;
     if (c.phase !== "POINT_CONFIRMED") return;
+    if (raceToComplete(c.activeMatch, state.session.format, state.session.pointLimit, state.session.deckStyle)) {
+      c.phase = "MATCH_COMPLETE"; c.activeAnchor = null; c.pointConfirmation = null;
+      logAction("RACE_TO_COMPLETE", { matchId: c.activeMatch.id }); renderController(); return;
+    }
     c.sideSwapFading = true;
     renderController();
     clearTimeout(sideSwapTimer);
@@ -658,14 +701,18 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     const pointLimit = Number($("#scrimmagePointLimit").value);
     const deckStyle = $("#scrimmageDeck").value;
     const c = clone(defaultState.controller);
-    c.activeMatch = scrimmageMatch(`scrimmage-${Date.now()}`, left, right);
+    const localEventId = `local-scrimmage-${crypto.randomUUID()}`;
+    state.activeEventId = localEventId;
+    state.event = { id: localEventId, source: "local", name: `${left} vs ${right}`, venue: "Local practice", format, status: "Local" };
+    c.eventId = localEventId;
+    c.activeMatch = scrimmageMatch(`scrimmage-${Date.now()}`, left, right, localEventId);
     if (deckStyle === "split") {
       const nextLeft = $("#scrimmageNextLeft").value.trim() || "TEAM 3";
       const nextRight = $("#scrimmageNextRight").value.trim() || "TEAM 4";
-      c.inactiveMatch = scrimmageMatch(`scrimmage-next-${Date.now()}`, nextLeft, nextRight);
+      c.inactiveMatch = scrimmageMatch(`scrimmage-next-${Date.now()}`, nextLeft, nextRight, localEventId);
     } else c.inactiveMatch = null;
     state.controller = c;
-    state.session = { active: true, type: "scrimmage", eventId: null, label: `${left} vs ${right}`, format, pointLimit, deckStyle };
+    state.session = { active: true, type: "scrimmage", eventId: localEventId, label: `${left} vs ${right}`, format, pointLimit, deckStyle };
     logAction("SCRIMMAGE_STARTED", { left, right, format, pointLimit, deckStyle });
     modal.close();
     route("live-controller");
@@ -764,17 +811,18 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     return controller;
   }
 
-  function activateRemoteEvent(selected) {
+  async function activateRemoteEvent(selected) {
     save();
+    await restoreControllerWorkspace(selected.id);
     const eventId = selected.id;
     const stored = state.eventWorkspaces?.[eventId];
     const eventRecord = {
       ...(stored?.event || {}),
       id: eventId,
       source: "PBN",
-      name: selected.name,
+      name: String(selected.name).replace(/[<>"`]/g, ""),
       date: remoteEventDateLabel(selected),
-      venue: selected.venue,
+      venue: String(selected.venue).replace(/[<>"`]/g, ""),
       format: selected.format || selected.eventType,
       eventType: selected.eventType,
       pointLimit: selected.pointLimit || "",
@@ -783,7 +831,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
       status: selected.status === "DRAFT" ? "Draft" : selected.status
     };
     const scheduleSource = stored?.schedule || (Array.isArray(selected.schedule) ? selected.schedule : []);
-    const schedule = scheduleSource.map((match) => ({ ...match, eventId }));
+    const schedule = scheduleSource.map((match) => ({ ...match, left: String(match.left).replace(/[<>"`]/g, ""), right: String(match.right).replace(/[<>"`]/g, ""), eventId }));
     state.activeEventId = eventId;
     state.event = eventRecord;
     state.divisions = clone(stored?.divisions || (Array.isArray(selected.divisions) ? selected.divisions : []));
@@ -811,7 +859,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
     else if (action === "open-remote-event") {
       const selected = (state.remoteEvents || []).find((item) => item.id === button.dataset.eventId);
       if (!selected) return toast("That PBN event is no longer available.");
-      activateRemoteEvent(selected);
+      void activateRemoteEvent(selected);
     }
     else if (action === "sign-out") signOut();
     else if (action === "delete-account") confirmAccountDeletion();
@@ -854,7 +902,7 @@ import { SecureStorage } from "@aparajita/capacitor-secure-storage";
   });
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) void refreshRemoteEvents();
+    if (!document.hidden) { void refreshRemoteEvents(); queueControllerSync(); }
   });
 
   state.activity = getLog().slice(-30).reverse();
