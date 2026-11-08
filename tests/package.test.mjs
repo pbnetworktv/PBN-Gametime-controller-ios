@@ -104,7 +104,7 @@ test("legacy and offline demo state cannot bypass account entry on launch", () =
 });
 
 test("signed-in members can open their shared PBN events", () => {
-  assert.match(app, /\/api\/game-time\/events/);
+  assert.match(app, /\/api\/game-time\/player\/controller-events/);
   assert.match(app, /My PBN events/);
   assert.match(app, /data-action="open-remote-event"/);
   assert.match(app, /REMOTE_EVENT_OPENED/);
