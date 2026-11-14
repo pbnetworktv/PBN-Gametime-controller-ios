@@ -101,6 +101,13 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
   let syncTimer = null;
   let syncBusy = false;
   let lastClockPersist = 0;
+  const coinConfirmations = new Map();
+  const coinSyncedScores = new Map();
+  const scoreKey = (controller) => {
+      const match = controller?.activeMatch;
+      return controller?.phase === "MATCH_COMPLETE" && match ? `${match.id}/${match.leftScore}/${match.rightScore}` : null;
+  };
+  let coinConfirming = false;
   const remoteRevisions = new Map();
 
   function queueControllerSync() {
@@ -111,18 +118,31 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
   async function flushControllerSync() {
     if (syncBusy) { queueControllerSync(); return; }
     const eventId = state.activeEventId;
-    if (!eventId || !remoteRevisions.has(eventId)) return;
-    const session = await readSecureSession();
-    if (!session?.token) return;
+    if (!eventId || !remoteRevisions.has(eventId) || state.event?.coinResult) return;
     syncBusy = true;
+    const session = await readSecureSession();
+    if (!session?.token) { syncBusy = false; return; }
+    if (state.activeEventId !== eventId) { syncBusy = false; return; }
     try {
       captureActiveEventWorkspace();
       const snapshot = clone(state.eventWorkspaces[eventId]);
-      const result = await authRequest(`/api/game-time/player/controller/${encodeURIComponent(eventId)}`, { method: "PUT", body: JSON.stringify({ revision: remoteRevisions.get(eventId), snapshot }) }, session.token);
+      const completedScore = scoreKey(snapshot.controller);
+      const confirmCoinResult = coinConfirmations.get(eventId) === true && completedScore !== null && coinSyncedScores.get(eventId) === completedScore;
+      const result = await authRequest(`/api/game-time/player/controller/${encodeURIComponent(eventId)}`, { method: "PUT", body: JSON.stringify({ revision: remoteRevisions.get(eventId), snapshot, confirmCoinResult }) }, session.token);
+      coinSyncedScores.set(eventId, completedScore);
       remoteRevisions.set(eventId, result.revision);
+      if (result.coinResult) {
+        coinConfirmations.delete(eventId);
+        if (state.activeEventId === eventId) state.event.coinResult = result.coinResult;
+      }
       state.sync.lastSync = now(); state.sync.pending = 0; state.sync.error = null; save();
-    } catch (error) { state.sync.error = error.message; state.sync.pending = 1; save(); if (error.status === 409) toast(error.message); }
-    finally { syncBusy = false; }
+    } catch (error) { state.sync.error = error.message; state.sync.pending = 1; save(); if (error.status === 409 || coinConfirmations.has(eventId)) { coinConfirmations.delete(eventId); toast(error.message); } }
+    finally {
+      syncBusy = false;
+      if (!coinConfirmations.has(eventId)) coinConfirming = false;
+      else if (state.activeEventId === eventId) queueControllerSync();
+      if (state.activeEventId === eventId && state.event?.coinChallenge && state.route === "live-controller" && state.controller.phase === "MATCH_COMPLETE") renderController();
+    }
   }
   async function restoreControllerWorkspace(eventId) {
     const session = await readSecureSession();
@@ -130,7 +150,11 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
     try {
       const saved = await authRequest(`/api/game-time/player/controller/${encodeURIComponent(eventId)}`, { method: "GET" }, session.token);
       remoteRevisions.set(eventId, saved?.revision ?? 0);
-      if (saved?.snapshot) state.eventWorkspaces[eventId] = saved.snapshot;
+      coinSyncedScores.set(eventId, scoreKey(saved?.snapshot?.controller));
+      if (saved?.snapshot) {
+        state.eventWorkspaces[eventId] = saved.snapshot;
+        if (saved.coinResult) state.eventWorkspaces[eventId].event.coinResult = saved.coinResult;
+      }
     } catch (error) { toast(`Controller is local until connection is restored: ${error.message}`); }
   }
 
@@ -435,7 +459,11 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
   }
   function controllerMainButton() {
     const phase = state.controller.phase;
-    if (phase === "MATCH_COMPLETE") return `<section class="decision"><h3>MATCH COMPLETE</h3><p>Final score ${state.controller.activeMatch.leftScore} — ${state.controller.activeMatch.rightScore}</p><p>PBN career score: pending scoring rules.</p></section>`;
+    if (phase === "MATCH_COMPLETE") {
+      const result = state.event?.coinResult;
+      const controls = !state.event?.coinChallenge ? '<p>PBN career score: pending scoring rules.</p>' : result === "SETTLED" ? '<p>Official result saved · coins settled.</p>' : result === "REVIEW" ? '<p>Official result saved · awaiting review.</p>' : `<button type="button" class="primary wide" data-action="confirm-coin-result" ${coinConfirming ? "disabled" : ""}>${coinConfirming ? "CONFIRMING…" : "CONFIRM FINAL SCORE"}</button>`;
+      return `<section class="decision"><h3>MATCH COMPLETE</h3><p>Final score ${state.controller.activeMatch.leftScore} — ${state.controller.activeMatch.rightScore}</p>${controls}</section>`;
+     }
     if (phase === "READY") return `<button class="main-command" data-action="start-break">▶ START BREAK</button>`;
     if (phase === "BREAK_PAUSED") return `<button class="main-command base" disabled><span>BREAK PAUSED</span><small>PRESS RESUME TO CONTINUE</small></button>`;
     if (phase === "POINT_LIVE" || phase === "GAME_PAUSED") return `<div class="base-pair"><button class="main-command base" data-action="base" data-side="left"><span>⚑ LEFT BASE</span><small>STOP GAME CLOCK</small></button><button class="main-command base" data-action="base" data-side="right"><span>RIGHT BASE ⚑</span><small>STOP GAME CLOCK</small></button></div>`;
@@ -831,6 +859,8 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
       pointLimit: selected.pointLimit || "",
       matchTerms: selected.matchTerms || null,
       agreementRevision: selected.agreementRevision || null,
+      coinChallenge: selected.coinChallenge === true,
+      coinResult: stored?.event?.coinResult || selected.coinResult || null,
       deckStyle: selected.deckStyle || "",
       visibility: selected.visibility,
       status: selected.status === "DRAFT" ? "Draft" : selected.status
@@ -838,6 +868,7 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
     const scheduleSource = stored?.schedule || (Array.isArray(selected.schedule) ? selected.schedule : []);
     const schedule = scheduleSource.map((match) => ({ ...match, left: String(match.left).replace(/[<>"`]/g, ""), right: String(match.right).replace(/[<>"`]/g, ""), eventId }));
     state.activeEventId = eventId;
+    coinConfirming = false;
     state.event = eventRecord;
     state.divisions = clone(stored?.divisions || (Array.isArray(selected.divisions) ? selected.divisions : []));
     state.teams = clone(stored?.teams || (Array.isArray(selected.teams) ? selected.teams : []));
@@ -885,10 +916,19 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
     else if (action === "approve-point") decide("approve");
     else if (action === "reverse-point") decide("reverse");
     else if (action === "no-point") decide("no_point");
-    else if (action === "undo") undo();
-    else if (action === "set-break") showClockPicker();
+    else if (action === "confirm-coin-result") {
+      const id = state.activeEventId;
+      if (!state.event?.coinChallenge || state.event.coinResult || coinConfirming || state.controller.phase !== "MATCH_COMPLETE") return;
+      if (!remoteRevisions.has(id)) return toast("Reconnect and reopen the challenge to confirm its score.");
+      coinConfirming = true;
+      coinConfirmations.set(id, true);
+      renderController();
+      queueControllerSync();
+    }
+    else if (action === "undo" && !state.event?.coinResult && !coinConfirming) undo();
+    else if (action === "set-break" && !state.event?.coinResult && !coinConfirming && !(state.event?.coinChallenge && state.controller.phase === "MATCH_COMPLETE")) showClockPicker();
     else if (action === "set-default-mode") { clockPickerMode = "default"; renderClockPicker(); }
-    else if (action === "score-plus" || action === "score-minus") { snapshotController(); const side = button.dataset.side; const match = state.controller.activeMatch; const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId; const key = teamId === match.leftTeamId ? "leftScore" : "rightScore"; match[key] = Math.max(0, match[key] + (action === "score-plus" ? 1 : -1)); logAction("MANUAL_SCORE_CORRECTION", { side, teamId, delta: action === "score-plus" ? 1 : -1 }); renderController(); }
+    else if ((action === "score-plus" || action === "score-minus") && !state.event?.coinResult && !coinConfirming) { snapshotController(); const side = button.dataset.side; const match = state.controller.activeMatch; const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId; const key = teamId === match.leftTeamId ? "leftScore" : "rightScore"; match[key] = Math.max(0, match[key] + (action === "score-plus" ? 1 : -1)); logAction("MANUAL_SCORE_CORRECTION", { side, teamId, delta: action === "score-plus" ? 1 : -1 }); renderController(); }
     else if (action === "export-log") exportLog();
     else if (action === "reset-all") { const auth = { authenticated: state.authenticated, authMode: state.authMode, member: state.member, operator: state.operator, route: state.authenticated ? "command-home" : "login" }; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(EVENT_LOG_KEY); state = { ...clone(defaultState), ...auth }; save(); render(); }
     else if (action === "finalize-playoffs") toast("Qualifying is still active. Projection was not finalized.");
