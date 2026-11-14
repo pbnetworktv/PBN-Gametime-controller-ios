@@ -1,5 +1,5 @@
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
-import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rules.js";
+import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rules.js";
 
 (() => {
   "use strict";
@@ -83,6 +83,11 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
         migrated.controller = { ...clone(defaultState.controller), eventId: saved.event.id, activeMatch: null, inactiveMatch: null, activeAnchor: null, pointHistory: [], undoStack: [] };
         migrated.scheduleDraft = { ...clone(defaultState.scheduleDraft), eventId: saved.event.id, fields: 0, generated: false, published: false };
         migrated.session = { active: false, type: null, eventId: saved.event.id, label: saved.event.name, format: saved.event.format, pointLimit: saved.event.pointLimit || null, deckStyle: saved.event.deckStyle || null };
+      }
+      if (migrated.session?.type === "event" && migrated.session.eventId === migrated.event?.id) {
+        const configuredDeck = migrated.event.matchTerms?.deckStyle || migrated.event.deckStyle;
+        migrated.session.deckStyle = controllerDeckStyle(configuredDeck, Boolean(migrated.controller.inactiveMatch));
+        if (migrated.session.deckStyle === "single") migrated.controller.inactiveMatch = null;
       }
       return migrated;
     } catch { return clone(defaultState); }
@@ -437,9 +442,10 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
       page(`${topbar("Live Controller", "event-dashboard")}<section class="card empty"><h2>No match is ready</h2><p>This event has no scheduled teams yet. Add teams and build its schedule before opening the controller.</p><small>Event ID: ${escapeHtml(state.activeEventId || state.event?.id || "")}</small></section>`, "event-dashboard");
       return;
     }
-    const singleDeck = !state.controller.inactiveMatch || (state.session?.type === "scrimmage" && state.session.deckStyle !== "split");
+    const configuredDeck = state.event?.matchTerms?.deckStyle || state.event?.deckStyle || state.session?.deckStyle;
+    const singleDeck = controllerDeckStyle(configuredDeck, Boolean(state.controller.inactiveMatch)) === "single";
     const splitScrimmage = state.session?.type === "scrimmage" && state.session.deckStyle === "split";
-    const nextRows = splitScrimmage
+    const nextRows = singleDeck ? "" : splitScrimmage
       ? `<div class="next-row"><span>${state.controller.inactiveMatch.leftTeam}</span><b>VS</b><span>${state.controller.inactiveMatch.rightTeam}</span><span>ON DECK</span></div>`
       : state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("");
     page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p></header>
@@ -752,6 +758,7 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
     const eventId = state.activeEventId || state.event?.id;
     if (!eventId || eventId !== state.event?.id) return toast("This event could not be identified. Reopen it from My PBN events.");
     if (!state.schedule.length) return toast("Add teams and build a schedule before running this event.");
+    const configuredDeck = state.event.matchTerms?.deckStyle || state.event.deckStyle;
     if (!state.session?.active || state.session?.type !== "event" || state.session?.eventId !== eventId || !state.controller?.activeMatch) {
       const c = clone(defaultState.controller);
       const active = state.schedule[0];
@@ -759,10 +766,12 @@ import { raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rule
       if (active.eventId && active.eventId !== eventId) return toast("That match belongs to a different event.");
       c.eventId = eventId;
       c.activeMatch = scrimmageMatch(active.id, active.left, active.right, eventId);
-      c.inactiveMatch = inactive ? scrimmageMatch(inactive.id, inactive.left, inactive.right, eventId) : null;
+      c.inactiveMatch = controllerDeckStyle(configuredDeck, Boolean(inactive)) === "split" ? scrimmageMatch(inactive.id, inactive.left, inactive.right, eventId) : null;
       state.controller = applyMatchTerms(c,state.event.matchTerms);
     }
-    state.session = { active: true, type: "event", eventId, label: state.event.name, format: state.event.format, pointLimit: state.event.pointLimit || null, deckStyle: state.controller.inactiveMatch ? "split" : "single" };
+    const deckStyle = controllerDeckStyle(configuredDeck, Boolean(state.controller.inactiveMatch));
+    if (deckStyle === "single") state.controller.inactiveMatch = null;
+    state.session = { active: true, type: "event", eventId, label: state.event.name, format: state.event.format, pointLimit: state.event.pointLimit || null, deckStyle };
     logAction("EVENT_CONTROL_OPENED", { eventId });
     route("live-controller");
   }

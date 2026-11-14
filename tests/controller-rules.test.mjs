@@ -1,7 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {readFile} from 'node:fs/promises';
-import { raceToComplete,applyMatchTerms,useTeamTimeout } from "../src/controller-rules.js";
+import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } from "../src/controller-rules.js";
+test("a later scheduled match never converts an explicit single-deck event to split deck", () => {
+  assert.equal(controllerDeckStyle("SINGLE", true), "single");
+  assert.equal(controllerDeckStyle("Single", true), "single");
+  assert.equal(controllerDeckStyle("Single-deck", true), "single");
+  assert.equal(controllerDeckStyle("SPLIT", true), "split");
+  assert.equal(controllerDeckStyle("SPLIT", false), "single");
+  assert.equal(controllerDeckStyle("", true), "split");
+});
 test("race-to finishes only after a decisive target score", () => {
   assert.equal(raceToComplete({ leftScore: 2, rightScore: 1 }, "Race-to", "3", "single"), false);
   assert.equal(raceToComplete({ leftScore: 3, rightScore: 1 }, "Race-to", "3", "single"), true);
