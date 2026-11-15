@@ -235,6 +235,8 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     try {
       const events = await authRequest("/api/game-time/player/controller-events", { method: "GET" }, token);
       state.remoteEvents = Array.isArray(events) ? events : [];
+      const active = state.remoteEvents.find(event => event.id === state.activeEventId);
+      if (active?.eventCode && state.event?.source === "PBN") state.event.eventCode = active.eventCode;
       save();
       return true;
     } catch (error) {
@@ -395,12 +397,27 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   function renderLeagueHome() {
     page(`${topbar(state.league.name, "leagues")}<section class="card hero"><span class="eyebrow">${state.league.season}</span><h2>${state.event.name}</h2><p>${state.event.date} · ${state.event.venue}</p><button class="primary wide" data-route="event-dashboard">OPEN EVENT</button></section><div class="section-title"><h2>League actions</h2></div><div class="grid"><button class="menu-card" data-route="teams"><span class="count">${state.teams.length}</span><strong>Teams</strong><small>Review event teams</small></button><button class="menu-card" data-route="divisions"><span class="count">${state.divisions.length}</span><strong>Divisions</strong><small>Formats and assignments</small></button></div>`, null);
   }
+  function eventCodeControl() {
+    const code = state.event?.eventCode;
+    if (typeof code !== "string" || !/^[A-Z0-9]{6}$/.test(code)) return "";
+    return `<div class="button-row"><strong>Event code <span>${code}</span></strong><button class="secondary" type="button" data-action="copy-event-code" aria-label="Copy event code">Copy</button></div>`;
+  }
+  async function copyEventCode() {
+    const code = state.event?.eventCode;
+    if (!code) return;
+    try {
+      await navigator.clipboard.writeText(code);
+      toast("Event code copied.");
+    } catch {
+      toast("Could not copy. You can enter the displayed code on another Controller.");
+    }
+  }
   function renderDashboard() {
     const next = state.schedule[0];
     const steps = eventSetupSteps();
     const complete = steps.filter(step => step.done).length;
     const nextStep = steps.find(step => !step.done) || steps[steps.length - 1];
-    page(`${topbar("Event Command", "command-home")}<section class="event-command-hero"><div><span class="eyebrow">${state.event.status} · ${state.event.date}</span><h2>${state.event.name}</h2><p>${state.event.venue}</p><small>Event ID: ${escapeHtml(state.event.id)}</small></div><button class="run-event" data-action="run-event" ${next ? "" : "disabled"}>▶ RUN EVENT</button></section>
+    page(`${topbar("Event Command", "command-home")}<section class="event-command-hero"><div><span class="eyebrow">${state.event.status} · ${state.event.date}</span><h2>${state.event.name}</h2><p>${state.event.venue}</p>${eventCodeControl() || `<small>Event ID: ${escapeHtml(state.event.id)}</small>`}</div><button class="run-event" data-action="run-event" ${next ? "" : "disabled"}>▶ RUN EVENT</button></section>
       <div class="section-title"><h2>Up next</h2>${next ? `<span class="status">${next.time}</span>` : ""}</div>${next ? `<button class="next-match" data-action="run-event"><div><strong>${next.left} vs ${next.right}</strong><small>${next.field} · ${next.status}</small></div><span>OPEN CONTROLLER ›</span></button>` : `<div class="card empty">No matches are assigned to this event yet. Add teams, then build the event schedule.</div>`}
       <div class="readiness-head"><div><span class="eyebrow">EVENT READINESS</span><h2>${complete} of ${steps.length} complete</h2></div><strong>${Math.round(complete / steps.length * 100)}%</strong></div><div class="readiness-bar"><span style="width:${complete / steps.length * 100}%"></span></div>
       <section class="setup-path">${steps.map((step, index) => `<button class="setup-step ${step.done ? "done" : index === steps.indexOf(nextStep) ? "current" : ""}" data-route="${step.route}"><i>${step.done ? "✓" : index + 1}</i><span><strong>${step.title}</strong><small>${step.detail}</small></span><b>›</b></button>`).join("")}</section>
@@ -448,7 +465,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     const nextRows = singleDeck ? "" : splitScrimmage
       ? `<div class="next-row"><span>${state.controller.inactiveMatch.leftTeam}</span><b>VS</b><span>${state.controller.inactiveMatch.rightTeam}</span><span>ON DECK</span></div>`
       : state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("");
-    page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p></header>
+    page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p>${eventCodeControl()}</header>
       ${singleDeck ? `<div class="controller-mode">SINGLE DECK SCRIMMAGE</div>` : `<section class="scorebug"><span class="team">${state.controller.inactiveMatch.leftTeam}</span><strong class="score">${state.controller.inactiveMatch.leftScore}</strong><span class="clock">${formatMs(state.controller.inactiveMatch.gameMs)}</span><strong class="score">${state.controller.inactiveMatch.rightScore}</strong><span class="team">${state.controller.inactiveMatch.rightTeam}</span></section>`}
       <section class="active-game"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid ${state.controller.sideSwapFading ? "side-swap-fade" : ""}"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "left" ? "score-flash" : ""}">${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${state.event?.matchTerms?.mode === "RACE_TO" ? "TO " + state.event.matchTerms.raceTo : formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "right" ? "score-flash" : ""}">${scoreForPhysical("right")}</strong></div></div></section>
       <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
@@ -860,6 +877,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       ...(stored?.event || {}),
       id: eventId,
       source: "PBN",
+      eventCode: selected.eventCode || stored?.event?.eventCode,
       name: String(selected.name).replace(/[<>"`]/g, ""),
       date: remoteEventDateLabel(selected),
       venue: String(selected.venue).replace(/[<>"`]/g, ""),
@@ -906,6 +924,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       if (!selected) return toast("That PBN event is no longer available.");
       void activateRemoteEvent(selected);
     }
+    else if (action === "copy-event-code") void copyEventCode();
     else if (action === "sign-out") signOut();
     else if (action === "delete-account") confirmAccountDeletion();
     else if (action === "confirm-delete-account") deleteAccount();
