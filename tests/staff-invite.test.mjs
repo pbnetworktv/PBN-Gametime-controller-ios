@@ -14,3 +14,11 @@ test("links with unrelated hosts or paths cannot open the staff join screen", ()
   assert.equal(staffInviteFromLink("pbngametimecontroller://staff/settings?code=D34A78"), null);
   assert.equal(staffInviteFromLink("pbngametimecontroller://staff/join?code=short"), null);
 });
+
+test("the hosted Controller reads its own event invite and rejects other origins", () => {
+  const origin = "https://preview.example.test";
+  assert.deepEqual(staffInviteFromLink(origin + "/game-time-controller/index.html?code=d34a78&day=2030-06-08", origin), {
+    code: "D34A78", day: "2030-06-08"
+  });
+  assert.equal(staffInviteFromLink("https://example.test/game-time-controller/index.html?code=D34A78", origin), null);
+});

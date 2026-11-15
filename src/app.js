@@ -215,8 +215,12 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     try { await SecureStorage.removeItem(AUTH_SESSION_KEY); } catch { /* already absent */ }
   }
   function authApiOrigin() {
+    if (isHostedController()) return window.location.origin;
     const configured = state.connection?.baseUrl?.trim();
     return (configured || DEFAULT_API_ORIGIN).replace(/\/$/, "");
+  }
+  function isHostedController() {
+    return /^https?:$/.test(window.location.protocol) && window.location.pathname === "/game-time-controller/index.html";
   }
   async function authRequest(path, options = {}, token = null) {
     const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
@@ -490,7 +494,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   }
 
   function openStaffInvite(url) {
-    const invite = staffInviteFromLink(url);
+    const invite = staffInviteFromLink(url, isHostedController() ? window.location.origin : undefined);
     if (!invite) return;
     pendingStaffInvite = invite;
     resumeStaffInvite();
@@ -1119,5 +1123,6 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     void App.addListener("appUrlOpen", event => openStaffInvite(event.url)).catch(() => {});
     void App.getLaunchUrl().then(event => { if (event?.url) openStaffInvite(event.url); }).catch(() => {});
   }
+  else if (isHostedController()) openStaffInvite(window.location.href);
   restoreAuthSession();
 })();
