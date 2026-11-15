@@ -821,7 +821,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       ? `<div class="next-row"><span>${state.controller.inactiveMatch.leftTeam}</span><b>VS</b><span>${state.controller.inactiveMatch.rightTeam}</span><span>ON DECK</span></div>`
       : state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("");
     page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p>${eventCodeControl()}</header>
-      ${singleDeck ? `<div class="controller-mode">SINGLE DECK SCRIMMAGE</div>` : `<section class="scorebug"><span class="team">${state.controller.inactiveMatch.leftTeam}</span><strong class="score">${state.controller.inactiveMatch.leftScore}</strong><span class="clock">${formatMs(state.controller.inactiveMatch.gameMs)}</span><strong class="score">${state.controller.inactiveMatch.rightScore}</strong><span class="team">${state.controller.inactiveMatch.rightTeam}</span></section>`}
+      ${singleDeck ? `<div class="controller-mode">SINGLE DECK SCRIMMAGE</div>` : renderOnDeckScorebug(state.controller.inactiveMatch)}
       <section class="active-game"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid ${state.controller.sideSwapFading ? "side-swap-fade" : ""}"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "left" ? "score-flash" : ""}">${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${state.event?.matchTerms?.mode === "RACE_TO" ? "TO " + state.event.matchTerms.raceTo : formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "right" ? "score-flash" : ""}">${scoreForPhysical("right")}</strong></div></div></section>
       <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
       ${state.event?.matchTerms ? `<section class="controller-card"><details><summary>AGREED MATCH RULES · REVISION ${state.event.agreementRevision}</summary><p>${escapeHtml(state.event.matchTerms.equipment)} · ${escapeHtml(state.event.matchTerms.fieldType)} · ${state.event.matchTerms.breakSeconds}s breaks</p><p>${escapeHtml(state.event.matchTerms.penaltyRules)}</p></details><div class="button-row">${['left','right'].map(side=>`<button class="secondary" data-action="team-timeout" data-side="${side}">${side.toUpperCase()} TIMEOUT (${Math.max(0,state.event.matchTerms.timeoutsPerTeam-(state.controller.timeoutsUsed?.[side==='left'?state.controller.activeMatch.leftPhysicalTeamId:state.controller.activeMatch.rightPhysicalTeamId]||0))})</button>`).join('')}</div></section>` : ''}
@@ -830,8 +830,10 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       <div class="controller-nav"><button data-route="command-home">HOME</button>${state.session?.type === "event" ? `<button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button>` : ""}</div></div>`, null, "controller-screen");
     startFrame();
   }
-  function scoreForPhysical(side) {
-    const match = state.controller.activeMatch;
+  function renderOnDeckScorebug(match) {
+    return `<section class="scorebug"><span class="team">${escapeHtml(match.leftPhysicalTeam)}</span><strong class="score">${scoreForPhysical("left", match)}</strong><span class="clock">${formatMs(match.gameMs)}</span><strong class="score">${scoreForPhysical("right", match)}</strong><span class="team">${escapeHtml(match.rightPhysicalTeam)}</span></section>`;
+  }
+  function scoreForPhysical(side, match = state.controller.activeMatch) {
     const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId;
     return teamId === match.leftTeamId ? match.leftScore : match.rightScore;
   }
@@ -840,16 +842,26 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     if (phase === "MATCH_COMPLETE") {
       const result = state.event?.coinResult;
       const controls = !state.event?.coinChallenge ? '<p>PBN career score: pending scoring rules.</p>' : result === "SETTLED" ? '<p>Official result saved · coins settled.</p>' : result === "REVIEW" ? '<p>Official result saved · awaiting review.</p>' : `<button type="button" class="primary wide" data-action="confirm-coin-result" ${coinConfirming ? "disabled" : ""}>${coinConfirming ? "CONFIRMING…" : "CONFIRM FINAL SCORE"}</button>`;
-      return `<section class="decision"><h3>MATCH COMPLETE</h3><p>Final score ${state.controller.activeMatch.leftScore} — ${state.controller.activeMatch.rightScore}</p>${controls}</section>`;
+      return `<section class="decision"><h3>MATCH COMPLETE</h3><p>Final score ${scoreForPhysical("left")} — ${scoreForPhysical("right")}</p>${controls}</section>`;
      }
     if (phase === "READY") return `<button class="main-command" data-action="start-break">▶ START BREAK</button>`;
     if (phase === "BREAK_PAUSED") return `<button class="main-command base" disabled><span>BREAK PAUSED</span><small>PRESS RESUME TO CONTINUE</small></button>`;
     if (phase === "POINT_LIVE" || phase === "GAME_PAUSED") return `<div class="base-pair"><button class="main-command base" data-action="base" data-side="left"><span>⚑ LEFT BASE</span><small>STOP GAME CLOCK</small></button><button class="main-command base" data-action="base" data-side="right"><span>RIGHT BASE ⚑</span><small>STOP GAME CLOCK</small></button></div>`;
     if (phase === "BREAK_RUNNING") return `<button class="main-command base" data-action="base" disabled><span>BREAK RUNNING</span><small style="display:block;font-size:8px">GAME STARTS AT 00:00</small></button>`;
-    return `<button class="main-command base" disabled>POINT STOPPED</button>`;
+    return "";
   }
-  function decisionPanel() { return `<section class="decision"><h3>${state.controller.pendingBaseSide?.toUpperCase()} BASE · DECISION</h3><div class="decision-grid"><button class="approve" data-action="approve-point">APPROVE POINT</button><button class="reverse" data-action="reverse-point">REVERSE POINT</button><button class="no-point" data-action="no-point">NO POINT</button></div><button class="secondary wide" style="margin-top:8px;min-height:38px" data-action="undo">UNDO LAST ACTION</button></section>`; }
-  function pointConfirmationPanel() { const confirmation = state.controller.pointConfirmation || {}; return `<section class="decision"><h3>${escapeHtml(confirmation.label || "POINT RECORDED")}</h3><p class="muted">Score updated. Advancing in 3 seconds…</p><button class="secondary wide" style="margin-top:8px;min-height:38px" data-action="undo">UNDO LAST ACTION</button></section>`; }
+  function decisionPanel() {
+    const { activeMatch: match, pendingBaseSide } = state.controller;
+    const awardButton = (side, pit, team) => {
+      const action = side === pendingBaseSide ? "reverse" : "approve";
+      return `<button class="point-choice" data-action="${action}-point"><span>AWARD POINT · ${pit}</span><strong>${escapeHtml(team)}</strong></button>`;
+    };
+    return `<section class="decision"><h3>${pendingBaseSide === "left" ? "PIT 1 BASE HIT" : "PIT 2 BASE HIT"}</h3><div class="decision-grid">
+      ${awardButton("left", "PIT 1", match.leftPhysicalTeam)}
+      ${awardButton("right", "PIT 2", match.rightPhysicalTeam)}
+    </div><div class="button-row"><button class="no-point" data-action="no-point">NO POINT</button><button class="secondary" data-action="undo">UNDO LAST ACTION</button></div></section>`;
+  }
+  function pointConfirmationPanel() { const confirmation = state.controller.pointConfirmation || {}; return `<section class="decision"><h3>${escapeHtml(confirmation.label || "POINT RECORDED")}</h3><p class="muted">Advancing in 3 seconds…</p><button class="secondary wide" style="margin-top:8px;min-height:38px" data-action="undo">UNDO LAST ACTION</button></section>`; }
 
   function renderStandings() { page(`${topbar("Scores & Standings")}<section class="card"><span class="eyebrow">${escapeHtml(state.event.format || "EVENT")} · EVENT ID ${escapeHtml(state.activeEventId || state.event.id)}</span><div class="list">${state.standings.length ? state.standings.map((s,i) => `<div class="list-row"><strong style="width:22px">${i+1}</strong><div><strong>${s.team}</strong><small>${s.w} W · ${s.l} L</small></div><span class="status ${i<2?"good":""}">${s.diff >= 0 ? "+" : ""}${s.diff}</span></div>`).join("") : `<div class="empty">No scores have been recorded for this event.</div>`}</div></section>`, "event-dashboard"); }
   function renderPlayoffs() {
@@ -986,17 +998,13 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     snapshotController();
     const side = c.pendingBaseSide;
     const scoringSide = side === "left" ? "right" : "left";
-    const scoringTeamId = scoringSide === "left" ? c.activeMatch.leftPhysicalTeamId : c.activeMatch.rightPhysicalTeamId;
-    const scoringTeam = scoringSide === "left" ? c.activeMatch.leftPhysicalTeam : c.activeMatch.rightPhysicalTeam;
-    const reversedTeamId = scoringSide === "left" ? c.activeMatch.rightPhysicalTeamId : c.activeMatch.leftPhysicalTeamId;
-    const addPoint = (teamId) => {
-      if (teamId === c.activeMatch.leftTeamId) c.activeMatch.leftScore += 1;
-      else c.activeMatch.rightScore += 1;
-    };
-    if (kind === "approve") {
-      addPoint(scoringTeamId);
-    }
-    if (kind === "reverse") { addPoint(reversedTeamId); speak("Point reversed"); }
+    const scoringPhysicalSide = kind === "approve" ? scoringSide : kind === "reverse" ? side : null;
+    const match = c.activeMatch;
+    const scoringTeamId = scoringPhysicalSide === "left" ? match.leftPhysicalTeamId : scoringPhysicalSide === "right" ? match.rightPhysicalTeamId : null;
+    const scoringTeam = scoringPhysicalSide === "left" ? match.leftPhysicalTeam : scoringPhysicalSide === "right" ? match.rightPhysicalTeam : null;
+    if (scoringTeamId === match.leftTeamId) match.leftScore += 1;
+    else if (scoringTeamId === match.rightTeamId) match.rightScore += 1;
+    if (kind === "reverse") speak("Point reversed");
     c.pointHistory.push({ at: now(), decision: kind, baseSide: side, scoringTeamId, scoringTeam, gameMs: c.gameMs });
     c.activeMatch.gameMs = c.gameMs;
     c.pendingBaseSide = null;
@@ -1006,8 +1014,8 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       scoringTeamId,
       scoringTeam,
       baseSide: side,
-      scoringPhysicalSide: kind === "approve" ? scoringSide : kind === "reverse" ? (scoringSide === "left" ? "right" : "left") : null,
-      label: kind === "approve" ? `POINT APPROVED · ${scoringTeam}` : kind === "reverse" ? "POINT REVERSED" : "NO POINT"
+      scoringPhysicalSide,
+      label: scoringPhysicalSide ? `POINT AWARDED · ${scoringTeam}` : "NO POINT"
     };
     logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { scoringTeamId, scoringTeam, baseSide: side });
     renderController();
@@ -1017,35 +1025,39 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   function finalizePointDecision() {
     const c = state.controller;
     if (c.phase !== "POINT_CONFIRMED") return;
-    if (raceToComplete(c.activeMatch, state.session.format, state.session.pointLimit, state.session.deckStyle)) {
-      c.phase = "MATCH_COMPLETE"; c.activeAnchor = null; c.pointConfirmation = null;
-      logAction("RACE_TO_COMPLETE", { matchId: c.activeMatch.id }); renderController(); return;
-    }
-    c.sideSwapFading = true;
-    renderController();
-    clearTimeout(sideSwapTimer);
-    sideSwapTimer = setTimeout(() => {
+    const pointAwarded = c.pointConfirmation?.kind === "approve" || c.pointConfirmation?.kind === "reverse";
+    const splitDeck = state.session?.deckStyle === "split";
+    const advance = () => {
       if (c.phase !== "POINT_CONFIRMED") return;
-      if (c.pointConfirmation?.kind !== "no_point") {
+      if (pointAwarded) {
         [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
         [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
       }
-      if (state.session?.deckStyle === "split") {
+      c.pointConfirmation = null;
+      c.sideSwapFading = false;
+      if (pointAwarded && raceToComplete(c.activeMatch, state.session.format, state.session.pointLimit, state.session.deckStyle)) {
+        c.phase = "MATCH_COMPLETE"; c.activeAnchor = null;
+        logAction("RACE_TO_COMPLETE", { matchId: c.activeMatch.id }); renderController(); return;
+      }
+      if (splitDeck) {
         const completedMatch = c.activeMatch;
         c.activeMatch = c.inactiveMatch;
         c.inactiveMatch = completedMatch;
         c.gameMs = c.activeMatch.gameMs;
         logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id });
       }
-      c.pointConfirmation = null;
-      c.sideSwapFading = false;
       c.breakMs = c.breakDefaultMs;
       c.phase = "BREAK_RUNNING";
       c.lastAnnouncement = null;
       startAnchor("break", c.breakMs);
       save();
       renderController();
-    }, 300);
+    };
+    if (!pointAwarded && !splitDeck) return advance();
+    c.sideSwapFading = true;
+    renderController();
+    clearTimeout(sideSwapTimer);
+    sideSwapTimer = setTimeout(advance, 300);
   }
   function undo() {
     clearTimeout(pointConfirmationTimer);
