@@ -17,6 +17,16 @@ fi
 /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations array" "$PLIST_PATH"
 /usr/libexec/PlistBuddy -c "Add :UISupportedInterfaceOrientations:0 string UIInterfaceOrientationPortrait" "$PLIST_PATH"
 
+if ! /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$PLIST_PATH" >/dev/null 2>&1; then
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes array" "$PLIST_PATH"
+fi
+if ! /usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes" "$PLIST_PATH" | grep -Fq 'pbngametimecontroller'; then
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0 dict" "$PLIST_PATH"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLName string tv.pbnetwork.gametimecontroller.staff" "$PLIST_PATH"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes array" "$PLIST_PATH"
+  /usr/libexec/PlistBuddy -c "Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string pbngametimecontroller" "$PLIST_PATH"
+fi
+
 # The controller canvas is an iPhone-first 390×844 operating surface. Limiting
 # the initial TestFlight target avoids requiring separate iPad screenshots.
 perl -0pi -e 's/TARGETED_DEVICE_FAMILY = "1,2";/TARGETED_DEVICE_FAMILY = 1;/g' "$PROJECT_PATH"

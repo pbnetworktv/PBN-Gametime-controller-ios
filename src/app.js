@@ -1,3 +1,5 @@
+import { App } from "@capacitor/app";
+import { staffInviteFromLink, staffInviteLink } from "./staff-invite.js";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rules.js";
 
@@ -103,6 +105,14 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   let cuePlayerName = null;
   let authView = "sign-in";
   let authBusy = false;
+  let pendingStaffInvite = null;
+  let staffAuthReady = false;
+  let staffPreview = null;
+  let staffLookup = 0;
+  let staffCode = "";
+  let staffDay = null;
+  let staffError = "";
+  let staffBusy = false;
   let syncTimer = null;
   let syncBusy = false;
   let lastClockPersist = 0;
@@ -228,6 +238,8 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     state.operator = { name: session.user.screenName || session.user.firstName || session.user.email, role: "PBN Member" };
     state.route = "command-home";
     await loadRemoteEvents(session.token);
+    staffAuthReady = true;
+    if (resumeStaffInvite()) return;
     save();
     render();
   }
@@ -296,7 +308,8 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
         save();
       }
     }
-    render();
+    staffAuthReady = true;
+    if (!resumeStaffInvite()) render();
   }
   function getLog() { try { return JSON.parse(localStorage.getItem(EVENT_LOG_KEY)) || []; } catch { return []; } }
   function logAction(type, payload = {}) {
@@ -344,6 +357,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   const pageDefinitions = {
     "login": renderLogin,
     "command-home": renderCommandHome,
+    "join-staff": renderStaffJoin,
     "leagues": renderLeagues,
     "league-home": renderLeagueHome,
     "event-dashboard": renderDashboard,
@@ -384,6 +398,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     const session = state.session || defaultState.session;
     const sharedEvents = Array.isArray(state.remoteEvents) ? state.remoteEvents : [];
     page(`<div class="command-head"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p></div>
+      <button class="command-choice" data-route="join-staff"><span class="choice-icon">✓</span><span><strong>JOIN EVENT STAFF</strong><small>Enter an event code to find the event and day</small></span><b>›</b></button>
       ${session.active ? `<section class="active-session"><span class="live-dot"></span><div><span class="eyebrow">ACTIVE ${session.type === "scrimmage" ? "SCRIMMAGE" : "EVENT"}</span><h2>${session.label || "Controller session"}</h2><p>Your clock and scores are saved on this device.</p></div><button class="primary" data-route="live-controller">RETURN TO CONTROLLER</button></section>` : `
       <section class="command-intro"><span class="eyebrow">EVENT COMMAND</span><h1>What are you running?</h1><p>Choose the fast scrimmage setup or prepare a complete scheduled event.</p></section>
       <button class="command-choice quick" data-action="open-scrimmage"><span class="choice-icon">▶</span><span><strong>START A SCRIMMAGE</strong><small>Pick a format, name the teams, and start playing</small></span><b>›</b></button>
@@ -400,7 +415,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   function eventCodeControl() {
     const code = state.event?.eventCode;
     if (typeof code !== "string" || !/^[A-Z0-9]{6}$/.test(code)) return "";
-    return `<div class="button-row"><strong>Event code <span>${code}</span></strong><button class="secondary" type="button" data-action="copy-event-code" aria-label="Copy event code">Copy</button></div>`;
+    return `<div class="button-row"><strong>Event code <span>${code}</span></strong><button class="secondary" type="button" data-action="copy-event-code" aria-label="Copy event code">Copy code</button><button class="secondary" type="button" data-action="share-staff-invite">Share staff link</button></div>`;
   }
   async function copyEventCode() {
     const code = state.event?.eventCode;
@@ -412,6 +427,111 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       toast("Could not copy. You can enter the displayed code on another Controller.");
     }
   }
+  function renderStaffJoin() {
+    const event = staffPreview;
+    const canContinue = Boolean(staffDay || event?.startsAt);
+    const dates = event?.days.map(day => `<option value="${escapeHtml(day.date)}" ${day.date === staffDay ? "selected" : ""}>${escapeHtml(day.weekday)} · ${escapeHtml(day.date)}</option>`).join("") || "";
+    page(`${topbar("Join Event Staff", "command-home")}<section class="card">
+      <form id="staffJoinForm"><div class="field"><label for="staffCode">Event code</label><input id="staffCode" value="${escapeHtml(staffCode)}" placeholder="D34A78" maxlength="12" autocapitalize="characters" autocomplete="off" required></div>
+      <button type="submit" class="primary wide" ${staffBusy ? "disabled" : ""}>${staffBusy ? "Finding event…" : "Find event"}</button></form>
+      ${staffError ? `<p role="alert">${escapeHtml(staffError)}</p>` : ""}
+      </section>${event ? `<section class="card"><p class="eyebrow">${escapeHtml(event.code)}</p><h2>${escapeHtml(event.name)}</h2><p>${escapeHtml(event.venue)}</p>
+      ${dates ? `<div class="field"><label for="staffDay">Scheduled day</label><select id="staffDay"><option value="">Choose a day</option>${dates}</select></div>` : event.startsAt ? `<p>Scheduled start in your local time · ${escapeHtml(new Date(event.startsAt).toLocaleString())}</p>` : ""}
+      ${canContinue ? '<p role="status">Venue check-in and role claims are not available yet.</p><button type="button" class="secondary" data-action="copy-staff-day">Copy staff link</button>' : ""}
+      </section>` : ""}`, "command-home");
+  }
+
+  async function lookupStaffEvent(input, day = null) {
+    const lookup = ++staffLookup;
+    staffCode = input.trim();
+    staffPreview = null;
+    staffDay = null;
+    staffError = "";
+    if (!/^[a-z0-9]{6}(?:-\((sun|mon|tue|wed|thu|fri|sat)\))?$/i.test(staffCode)) {
+      staffBusy = false;
+      staffError = "Enter the six-character event code.";
+      return renderStaffJoin();
+    }
+    staffBusy = true;
+    renderStaffJoin();
+    try {
+      const session = await readSecureSession();
+      if (!session?.token) {
+        if (lookup === staffLookup && state.route === "join-staff") {
+          pendingStaffInvite = { code: staffCode, day };
+          route("login");
+        }
+        return;
+      }
+      const params = new URLSearchParams({ code: staffCode });
+      if (day) params.set("day", day);
+      const event = await authRequest(`/api/game-time/player/staff/join?${params}`, {}, session.token);
+      if (lookup === staffLookup) {
+        staffPreview = event;
+        staffDay = event.selectedDay;
+      }
+    } catch (error) {
+      if (lookup === staffLookup) staffError = error.message || "Could not look up the event. Please try again.";
+    } finally {
+      if (lookup === staffLookup) {
+        staffBusy = false;
+        if (state.route === "join-staff") renderStaffJoin();
+      }
+    }
+  }
+
+  function resumeStaffInvite() {
+    if (!staffAuthReady || !pendingStaffInvite || state.authMode !== "member") return false;
+    const { code, day } = pendingStaffInvite;
+    pendingStaffInvite = null;
+    route("join-staff");
+    void lookupStaffEvent(code, day);
+    return true;
+  }
+
+  function openStaffInvite(url) {
+    const invite = staffInviteFromLink(url);
+    if (!invite) return;
+    pendingStaffInvite = invite;
+    resumeStaffInvite();
+  }
+
+  async function shareStaffInvite() {
+    const code = state.event?.eventCode;
+    try {
+      const session = await readSecureSession();
+      if (!session?.token || !code) return;
+      await authRequest("/api/game-time/player/staff/share", { method: "POST", body: JSON.stringify({ code }) }, session.token);
+      const url = staffInviteLink(code);
+      modalBody.innerHTML = `<h2>Share staff link</h2><div class="field"><label for="staffShareUrl">Invite link</label><input id="staffShareUrl" value="${escapeHtml(url)}" readonly></div><div class="button-row"><button type="button" class="primary" data-action="send-staff-invite">${navigator.share ? "Share link" : "Copy link"}</button><button class="secondary" value="cancel">Close</button></div>`;
+      if (!modal.open) modal.showModal();
+    } catch (error) {
+      if (error.name !== "AbortError") toast(error.message || "Could not share the staff link.");
+    }
+  }
+
+  async function sendStaffInvite() {
+    const link = $("#staffShareUrl");
+    if (!link) return;
+    try {
+      if (navigator.share) await navigator.share({ title: "Join Event Staff", url: link.value });
+      else {
+        await navigator.clipboard.writeText(link.value);
+        toast("Staff link copied.");
+      }
+    } catch (error) {
+      if (error.name !== "AbortError") { link.select(); toast("Select and copy the staff link."); }
+    }
+  }
+
+  async function copyStaffDayLink() {
+    if (!staffPreview) return;
+    try {
+      await navigator.clipboard.writeText(staffInviteLink(staffPreview.code, staffDay));
+      toast("Staff link copied.");
+    } catch { toast("Could not copy the staff link."); }
+  }
+
   function renderDashboard() {
     const next = state.schedule[0];
     const steps = eventSetupSteps();
@@ -925,6 +1045,9 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       void activateRemoteEvent(selected);
     }
     else if (action === "copy-event-code") void copyEventCode();
+    else if (action === "share-staff-invite") void shareStaffInvite();
+    else if (action === "send-staff-invite") void sendStaffInvite();
+    else if (action === "copy-staff-day") void copyStaffDayLink();
     else if (action === "sign-out") signOut();
     else if (action === "delete-account") confirmAccountDeletion();
     else if (action === "confirm-delete-account") deleteAccount();
@@ -964,12 +1087,18 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   });
 
   document.addEventListener("change", (event) => {
+    if (event.target.id === "staffDay") { staffDay = event.target.value || null; renderStaffJoin(); $("#staffDay")?.focus(); }
     if (event.target.id === "scrimmageDeck") $("#splitDeckTeams")?.classList.toggle("hidden", event.target.value !== "split");
     if (event.target.id === "scrimmageFormat") $("#scrimmagePointLimit")?.closest(".field")?.classList.toggle("hidden", event.target.value === "uncapped");
     if (event.target.id === "countdownCue") { state.audio = { ...(state.audio || {}), countdownCue: event.target.value }; save(); playCountdownCue(); }
   });
 
   document.addEventListener("submit", (event) => {
+    if (event.target.id === "staffJoinForm") {
+      event.preventDefault();
+      void lookupStaffEvent(event.target.querySelector("#staffCode").value);
+      return;
+    }
     if (event.target.id !== "signInForm" && event.target.id !== "signUpForm") return;
     event.preventDefault();
     submitAuthentication(event.target);
@@ -986,5 +1115,9 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     else state.controller.gameMs = remaining;
   }
   app.innerHTML = `<div class="auth-loading"><div class="brand">PBN</div><p>Restoring secure session…</p></div>`;
+  if (window.Capacitor?.isNativePlatform()) {
+    void App.addListener("appUrlOpen", event => openStaffInvite(event.url)).catch(() => {});
+    void App.getLaunchUrl().then(event => { if (event?.url) openStaffInvite(event.url); }).catch(() => {});
+  }
   restoreAuthSession();
 })();
