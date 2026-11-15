@@ -82,7 +82,7 @@ test("scrimmages support explicit single and split deck behavior", () => {
 
 test("base decisions award the team opposite the hit base", () => {
   assert.match(app, /const scoringSide = side === "left" \? "right" : "left"/);
-  assert.match(app, /addPoint\(scoringTeamId\)/);
+  assert.match(app, /const scoringPhysicalSide = kind === "approve" \? scoringSide : kind === "reverse" \? side : null/);
   assert.match(app, /ACTIVE_INACTIVE_SWAPPED/);
 });
 

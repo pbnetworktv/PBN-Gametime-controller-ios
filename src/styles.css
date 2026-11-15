@@ -21,6 +21,13 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
 .match-grid{transition:opacity 300ms ease-in-out}
 .match-grid.side-swap-fade{opacity:0}
 
+.decision-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.decision-grid .point-choice { min-height: 58px; padding: 7px 5px; border-color: #ff5367; }
+.decision-grid .point-choice:nth-child(2) { border-color: #44baf9; }
+.point-choice span, .point-choice strong { display: block; }
+.point-choice strong { margin-top: 4px; font-size: 14px; overflow-wrap: anywhere; }
+.decision .button-row { margin-top: 7px; }
+
 #eventSettingsForm fieldset {
   min-width: 0;
   margin: 0;
