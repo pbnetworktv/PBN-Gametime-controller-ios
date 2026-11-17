@@ -58,9 +58,9 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
 }
 .arena-controller {
   --arena-gap: 6px;
-  --arena-button-height: 44px;
-  --arena-clock-size: 54px;
-  --arena-score-size: 44px;
+  --arena-button-height: 48px;
+  --arena-clock-size: 64px;
+  --arena-score-size: 52px;
   --arena-cut: 7px;
   --arena-safe-top: max(12px, env(safe-area-inset-top));
   --arena-safe-bottom: max(14px, env(safe-area-inset-bottom));
@@ -189,7 +189,7 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
 .arena-inactive-team strong { flex: 0 0 auto; font-size: 21px; line-height: 1; font-variant-numeric: tabular-nums; }
 .arena-inactive-team-right { justify-content: space-between; }
 .arena-inactive-clock { display: block; padding: 3px 6px; border-radius: 50px; background: #ffffff0a; box-shadow: inset 0 1px #ffffff15; color: #bcb5c5; font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; text-align: center; }
-.arena-active { display: flex; flex: 1 0 auto; flex-direction: column; gap: var(--arena-gap); min-height: 0; }
+.arena-active { display: flex; flex: 1 1 auto; flex-direction: column; justify-content: space-between; gap: var(--arena-gap); min-height: 0; }
 .arena-active-heading {
   display: flex;
   align-items: center;
@@ -203,7 +203,7 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
 .arena-split .arena-active-heading { padding-top: 9px; margin-top: 1px; border-top: 1px solid #5a526465; flex-basis: 31px; }
 .arena-active-heading h2 { margin: 0; font: inherit; }
 .arena-active-heading > span { padding-left: 12px; border-left: 1px solid #766b83; color: #b45cf1; font-size: 16px; }
-.arena-clock-stack { display: flex; flex: 1 0 125px; flex-direction: column; align-items: center; justify-content: center; text-align: center; }
+.arena-clock-stack { display: flex; flex: 0 1 180px; flex-direction: column; align-items: center; justify-content: center; min-height: 142px; max-height: 220px; text-align: center; }
 .arena-clock-label { color: #b7b1c1; font-size: 13px; font-weight: 650; line-height: 1.25; }
 .arena-game-clock { display: block; font-size: var(--arena-clock-size); font-weight: 800; font-style: normal; font-variant-numeric: tabular-nums; letter-spacing: -.035em; line-height: 1; }
 .arena-break-stack { display: flex; align-items: center; gap: 7px; margin-top: 1px; }
@@ -259,7 +259,7 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
 .arena-point-type { flex: 0 0 auto; }
 .arena-point-type > p { margin: 0 0 5px; color: #b7afc1; font-size: 12px; font-weight: 650; line-height: 1.2; text-align: center; }
 .arena-type-options { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
-.arena-type-button { padding-right: 4px; padding-left: 4px; font-size: 14px; white-space: nowrap; }
+.arena-type-button { padding-right: 4px; padding-left: 4px; font-size: 16px; white-space: nowrap; }
 .arena-type-button.is-selected, .arena-start-break { background: linear-gradient(110deg, #d18bf7, #ae59e7 55%, #c27cf6); }
 .arena-type-button.is-selected::before, .arena-start-break::before { background: linear-gradient(120deg, #8340cb, #6b2bb9 52%, #60249b); box-shadow: inset 0 1px 9px #c385ff22; }
 .arena-teams { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px; flex: 0 0 auto; transition: opacity 220ms ease-in-out; }
@@ -273,7 +273,7 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
 .arena-score { display: block; margin: 2px 0 5px; font-size: var(--arena-score-size); font-weight: 800; font-style: normal; line-height: 1; font-variant-numeric: tabular-nums; }
 .arena-score-controls { gap: 8px; }
 .arena-score-button { padding: 0; font-size: 32px; line-height: 1; }
-.arena-start-break { flex: 0 0 auto; min-height: 48px; margin-top: 1px; font-size: 19px; }
+.arena-start-break { flex: 0 0 auto; min-height: 50px; margin-top: 1px; font-size: 20px; }
 .arena-start-break .arena-icon { width: 23px; height: 23px; }
 .arena-footer { display: grid; flex: 0 0 auto; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 8px; margin-top: 1px; padding-top: 5px; border-top: 1px solid #62566b66; }
 .arena-footer-with-tools { grid-template-columns: minmax(0, 1.45fr) minmax(0, .8fr) minmax(0, .7fr); }
@@ -295,12 +295,12 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
 .arena-complete .arena-clock-stack { flex-grow: 0; }
 .arena-complete .arena-completion button { min-height: 44px; }
 @media (min-height: 890px) {
-  .arena-controller { --arena-gap: 8px; --arena-button-height: 48px; --arena-clock-size: 68px; --arena-score-size: 56px; }
+  .arena-controller { --arena-gap: 8px; --arena-button-height: 50px; --arena-clock-size: 68px; --arena-score-size: 60px; }
   .arena-inactive { min-height: 66px; padding: 10px 12px; }
   .arena-inactive-heading { font-size: 13px; }
   .arena-inactive-team span { font-size: 12px; }
   .arena-active-heading { font-size: 19px; }
-  .arena-clock-stack { flex-basis: 140px; }
+  .arena-clock-stack { flex-basis: 190px; min-height: 148px; max-height: 230px; }
   .arena-type-button { font-size: 16px; }
   .arena-team-name { font-size: 20px; }
   .arena-team-name-long { font-size: 15px; }
@@ -308,11 +308,12 @@ dialog{width:min(92%,460px);padding:0;border:0;background:transparent;color:var(
   .arena-footer-button { font-size: 13px; }
 }
 @media (max-height: 820px) {
-  .arena-controller { --arena-gap: 5px; --arena-clock-size: 52px; --arena-score-size: 40px; }
+  .arena-controller { --arena-gap: 5px; --arena-button-height: 44px; --arena-clock-size: 52px; --arena-score-size: 40px; }
   .arena-inactive { min-height: 55px; padding-top: 7px; padding-bottom: 7px; }
   .arena-active-heading { flex-basis: 21px; font-size: 16px; }
   .arena-split .arena-active-heading { flex-basis: 24px; padding-top: 7px; }
-  .arena-clock-stack { flex-basis: 119px; }
+  .arena-clock-stack { flex-basis: 150px; min-height: 128px; }
+  .arena-type-button { font-size: 14px; }
   .arena-game-clock { line-height: 1; }
   .arena-team-name { font-size: 17px; }
   .arena-team-name-long { font-size: 14px; }
