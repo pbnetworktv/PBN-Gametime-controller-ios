@@ -1,9 +1,12 @@
 import { App } from "@capacitor/app";
+import { Capacitor } from "@capacitor/core";
+import { PBNControllerAudio } from "@pbnetwork/controller-audio";
 import { staffInviteFromLink, staffInviteLink } from "./staff-invite.js";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rules.js";
 import { beginPointDraft, normalizePointDraft, selectPointType, adjustPointScore, previewPointScore, commitPointDraft } from "./point-flow.js";
-import { renderControllerView } from "./controller-view.js";
+import { renderControllerView, isFinalBreakCountdown } from "./controller-view.js";
+import { createControllerAudio, isAudioCancellation } from "./controller-audio.js";
 
 (() => {
   "use strict";
@@ -128,8 +131,17 @@ import { renderControllerView } from "./controller-view.js";
   let frame = null;
   let clockPickerMode = "jump";
   let audioContext = null;
-  let cuePlayer = null;
-  let cuePlayerName = null;
+  let cueSequence = 0;
+  let cueCompletionTimer = null;
+  let lastAudioErrorAt = 0;
+  const controllerAudio = createControllerAudio({
+    native: Capacitor.getPlatform() === "ios" ? PBNControllerAudio : null,
+    onError: () => {
+      if (Date.now() - lastAudioErrorAt < 3000) return;
+      lastAudioErrorAt = Date.now();
+      toast("Could not play the announcement. Try Test announcements in Settings.");
+    }
+  });
   let authView = "sign-in";
   let authBusy = false;
   let pendingStaffInvite = null;
@@ -217,11 +229,13 @@ import { renderControllerView } from "./controller-view.js";
 
   function captureActiveEventWorkspace() {
     const eventId = state.activeEventId;
-    if (!eventId || eventId === "event-demo") return;
+    if (!eventId) return;
     state.eventWorkspaces ||= {};
     state.eventWorkspaces[eventId] = clone({
       eventId,
+      savedAt: now(),
       agreementRevision: state.event?.agreementRevision,
+      league: state.league,
       event: state.event,
       divisions: state.divisions,
       teams: state.teams,
@@ -459,14 +473,27 @@ import { renderControllerView } from "./controller-view.js";
   function renderCommandHome() {
     const session = state.session || defaultState.session;
     const sharedEvents = Array.isArray(state.remoteEvents) ? state.remoteEvents : [];
+    const savedSessions = Object.entries(state.eventWorkspaces || {})
+      .filter(([id, workspace]) => id !== state.activeEventId && workspace?.event && workspace.event.source !== "PBN" && (id !== "event-demo" || workspace.session?.active))
+      .sort(([, left], [, right]) => String(right.savedAt || "").localeCompare(String(left.savedAt || "")));
     page(`<div class="command-head"><div class="brand">PBN</div><p class="subtitle">GAME TIME CONTROLLER</p></div>
       <button class="command-choice" data-route="join-staff"><span class="choice-icon">✓</span><span><strong>JOIN EVENT STAFF</strong><small>Enter an event code to find the event and day</small></span><b>›</b></button>
-      ${session.active ? `<section class="active-session"><span class="live-dot"></span><div><span class="eyebrow">ACTIVE ${session.type === "scrimmage" ? "SCRIMMAGE" : "EVENT"}</span><h2>${escapeHtml(session.label || "Controller session")}</h2><p>Your clock and scores are saved on this device.</p></div><button class="primary" data-route="live-controller">RETURN TO CONTROLLER</button></section>` : `
-      <section class="command-intro"><span class="eyebrow">EVENT COMMAND</span><h1>What are you running?</h1><p>Choose the fast scrimmage setup or prepare a complete scheduled event.</p></section>
+      ${session.active ? `<section class="active-session"><span class="live-dot"></span><div><span class="eyebrow">ACTIVE ${session.type === "scrimmage" ? "SCRIMMAGE" : "EVENT"}</span><h2>${escapeHtml(session.label || "Controller session")}</h2><p>Your clock and scores are saved on this device. Starting another session pauses this one so you can return later.</p></div><button class="primary" data-route="live-controller">RETURN TO CONTROLLER</button></section>` : `<section class="command-intro"><span class="eyebrow">EVENT COMMAND</span><h1>What are you running?</h1><p>Choose a quick scrimmage or set up a local planned event.</p></section>`}
       <button class="command-choice quick" data-action="open-scrimmage"><span class="choice-icon">▶</span><span><strong>START A SCRIMMAGE</strong><small>Pick a format, name the teams, and start playing</small></span><b>›</b></button>
-      <button class="command-choice" data-route="event-dashboard"><span class="choice-icon">▤</span><span><strong>SET UP A FULL EVENT</strong><small>Schedule, divisions, fields, staff, and publishing</small></span><b>›</b></button>`}
+      <button class="command-choice" data-action="open-new-event"><span class="choice-icon">▤</span><span><strong>START NEW EVENT</strong><small>Create a local planned event with its own teams and opening matches</small></span><b>›</b></button>
+      ${savedSessions.length ? `<section class="recent-event"><div class="section-title"><h2>Saved sessions</h2><span class="status">ON THIS DEVICE</span></div><div class="list">${savedSessions.map(([id, workspace]) => renderSavedSession(id, workspace)).join("")}</div></section>` : ""}
       ${state.authMode === "member" ? `<section class="recent-event"><div class="section-title"><h2>My PBN events</h2><span class="status good">SYNCED</span></div>${sharedEvents.length ? sharedEvents.map(renderRemoteEventSummary).join("") : `<div class="card empty">No shared events yet. Create a draft from the Game Time tab on PBNetwork.tv.</div>`}</section>` : ""}
-      ${state.event.source === "PBN" ? "" : `<section class="recent-event"><div class="section-title"><h2>Local planned event</h2><span class="status warn">${state.event.status.toUpperCase()}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${state.league.name}</span><strong>${escapeHtml(state.event.name)}</strong><small>${escapeHtml(state.event.date)} · ${escapeHtml(state.event.venue)}</small></div><b>CONTINUE ›</b></button></section>`}`, "command-home", "command-screen");
+      ${state.event.source === "PBN" || session.type === "scrimmage" ? "" : `<section class="recent-event"><div class="section-title"><h2>${state.event.source === "demo" ? "Demo planned event" : "Local planned event"}</h2><span class="status warn">${escapeHtml(state.event.status.toUpperCase())}</span></div><button class="event-summary" data-route="event-dashboard"><div><span class="eyebrow">${escapeHtml(state.league.name)}</span><strong>${escapeHtml(state.event.name)}</strong><small>${escapeHtml(state.event.date)} · ${escapeHtml(state.event.venue)}</small></div><b>CONTINUE ›</b></button></section>`}`, "command-home", "command-screen");
+  }
+  function renderSavedSession(eventId, workspace) {
+    const session = workspace.session || {};
+    const controller = workspace.controller;
+    const match = session.active ? controller?.activeMatch : null;
+    const label = session.type === "scrimmage" ? "Scrimmage" : workspace.event.source === "PBN" ? "PBN event" : "Local planned event";
+    const details = match
+      ? `${match.leftTeam} ${match.leftScore} – ${match.rightScore} ${match.rightTeam} · ${formatMs(controller.gameMs)} remaining`
+      : [workspace.event.date, workspace.event.venue].filter(Boolean).join(" · ");
+    return `<button class="event-summary" data-action="resume-saved-session" data-event-id="${escapeHtml(eventId)}"><div><span class="eyebrow">${label}${controller?.phase?.endsWith("PAUSED") ? " · Paused" : ""}</span><strong>${escapeHtml(session.label || workspace.event.name)}</strong><small>${escapeHtml(details)}</small></div><b>${match ? "RESUME" : "OPEN"} ›</b></button>`;
   }
   function renderRemoteEventSummary(event) {
     const settings = state.eventWorkspaces?.[event.id]?.event?.controllerSettings;
@@ -605,7 +632,7 @@ import { renderControllerView } from "./controller-view.js";
     const complete = steps.filter(step => step.done).length;
     const nextStep = steps.find(step => !step.done) || steps[steps.length - 1];
     page(`${topbar("Event Command", "command-home")}<section class="event-command-hero"><div><span class="eyebrow">${escapeHtml(state.event.status)} · ${escapeHtml(state.event.date)}</span><h2>${escapeHtml(state.event.name)}</h2><p>${escapeHtml(state.event.venue)}</p>${eventCodeControl() || `<small>Event ID: ${escapeHtml(state.event.id)}</small>`}</div><button class="run-event" data-action="run-event" ${next ? "" : "disabled"}>▶ RUN EVENT</button></section>
-      <div class="section-title"><h2>Up next</h2>${next ? `<span class="status">${next.time}</span>` : ""}</div>${next ? `<button class="next-match" data-action="run-event"><div><strong>${next.left} vs ${next.right}</strong><small>${next.field} · ${next.status}</small></div><span>OPEN CONTROLLER ›</span></button>` : `<div class="card empty">No matches are assigned to this event yet. Add teams, then build the event schedule.</div>`}
+      <div class="section-title"><h2>Up next</h2>${next ? `<span class="status">${escapeHtml(next.time)}</span>` : ""}</div>${next ? `<button class="next-match" data-action="run-event"><div><strong>${escapeHtml(next.left)} vs ${escapeHtml(next.right)}</strong><small>${escapeHtml(next.field)} · ${escapeHtml(next.status)}</small></div><span>OPEN CONTROLLER ›</span></button>` : `<div class="card empty">No matches are assigned to this event yet. Add teams, then build the event schedule.</div>`}
       <div class="readiness-head"><div><span class="eyebrow">EVENT READINESS</span><h2>${complete} of ${steps.length} complete</h2></div><strong>${Math.round(complete / steps.length * 100)}%</strong></div><div class="readiness-bar"><span style="width:${complete / steps.length * 100}%"></span></div>
       <section class="setup-path">${steps.map((step, index) => `<button class="setup-step ${step.done ? "done" : index === steps.indexOf(nextStep) ? "current" : ""}" data-route="${step.route}"><i>${step.done ? "✓" : index + 1}</i><span><strong>${step.title}</strong><small>${step.detail}</small></span><b>›</b></button>`).join("")}</section>
       <button class="primary wide continue-setup" data-route="${nextStep.route}">CONTINUE WHERE I LEFT OFF</button>
@@ -709,7 +736,7 @@ import { renderControllerView } from "./controller-view.js";
     const dates = eventDates(event);
     const format = scoringPreset(event.format);
     const locked = eventSettingsLocked(event);
-    const singleDay = event.eventType === "Paintball scrimmage" || event.source === "local";
+    const singleDay = event.eventType === "Paintball scrimmage" || (event.source === "local" && state.session?.type === "scrimmage");
     const presets = singleDay ? SCORING_PRESETS.slice(0, 2) : SCORING_PRESETS;
     const sessionLimit = state.session?.eventId === event.id ? state.session.pointLimit : null;
     const pointLimit = event.pointLimit || sessionLimit || String(event.format || "").match(/-([1-7])$/)?.[1] || 3;
@@ -829,7 +856,7 @@ import { renderControllerView } from "./controller-view.js";
   function renderMasterSchedule() {
     page(`${topbar("Master Schedule")}<section class="card"><div class="section-title" style="margin-top:0"><h2>Schedule v${state.scheduleDraft.version}</h2><span class="status ${state.scheduleDraft.published ? "good" : "warn"}">${state.scheduleDraft.published ? "PUBLISHED" : "DRAFT"}</span></div><div class="list">${state.schedule.map(matchRow).join("")}</div><div class="button-row"><button class="secondary" data-route="schedule-builder">EDIT VERSION</button><button class="primary" data-action="publish-schedule">PUBLISH</button></div></section>`, "master-schedule");
   }
-  function matchRow(m) { return `<div class="list-row"><div><strong>${m.left} vs ${m.right}</strong><small>${m.time} · ${m.field}</small></div><span class="status">${m.status}</span></div>`; }
+  function matchRow(m) { return `<div class="list-row"><div><strong>${escapeHtml(m.left)} vs ${escapeHtml(m.right)}</strong><small>${escapeHtml(m.time)} · ${escapeHtml(m.field)}</small></div><span class="status">${escapeHtml(m.status)}</span></div>`; }
 
   function controllerEditingLocked() {
     return Boolean(state.event?.coinResult || coinConfirming);
@@ -905,6 +932,7 @@ import { renderControllerView } from "./controller-view.js";
       startBreakLabel: c.phase === "BREAK_RUNNING" ? "Break running" : c.phase === "BREAK_PAUSED" ? "Break paused" : "Start break",
       undoEnabled: !locked && c.undoStack.length > 0,
       breakEditable: !locked && !(state.event?.coinChallenge && c.phase === "MATCH_COMPLETE"),
+      breakWarning: isFinalBreakCountdown(c.breakMs),
       scoreMinusLeftEnabled: scoreEnabled && visibleScore("left") > 0,
       scoreMinusRightEnabled: scoreEnabled && visibleScore("right") > 0,
       settled: locked,
@@ -950,13 +978,13 @@ import { renderControllerView } from "./controller-view.js";
     const bracket = teams.length >= 4 ? `<h2>Semifinals</h2><div class="list"><div class="list-row"><div><strong>1 ${escapeHtml(teams[0])} vs 4 ${escapeHtml(teams[3])}</strong><small>Projected from this event's standings</small></div></div><div class="list-row"><div><strong>2 ${escapeHtml(teams[1])} vs 3 ${escapeHtml(teams[2])}</strong><small>Projected from this event's standings</small></div></div></div>` : `<div class="empty">This event does not have enough results to project playoffs.</div>`;
     page(`${topbar("Playoffs")}<section class="card"><span class="eyebrow">PROJECTED · NOT OFFICIAL</span>${bracket}</section>`, "event-dashboard");
   }
-  function renderTeams() { page(`${topbar("Teams")}<div class="list">${state.teams.map((t,i) => `<button class="list-row" data-action="team-detail"><strong style="width:24px">${i+1}</strong><div><strong>${t}</strong><small>Roster managed in future player app</small></div><span>›</span></button>`).join("")}</div>`, "event-dashboard"); }
-  function renderDivisions() { page(`${topbar("Divisions")}<div class="list">${state.divisions.map(d => `<button class="list-row"><div><strong>${d.name}</strong><small>${d.teams} teams · ${d.format}</small></div><span>›</span></button>`).join("")}</div>`, "event-dashboard"); }
+  function renderTeams() { page(`${topbar("Teams")}<div class="list">${state.teams.map((t,i) => `<button class="list-row" data-action="team-detail"><strong style="width:24px">${i+1}</strong><div><strong>${escapeHtml(t)}</strong><small>Roster managed in future player app</small></div><span>›</span></button>`).join("")}</div>`, "event-dashboard"); }
+  function renderDivisions() { page(`${topbar("Divisions")}<div class="list">${state.divisions.map(d => `<button class="list-row"><div><strong>${escapeHtml(d.name)}</strong><small>${escapeHtml(d.teams)} teams · ${escapeHtml(d.format)}</small></div><span>›</span></button>`).join("")}</div>`, "event-dashboard"); }
   function renderFields() { page(`${topbar("Fields & Pits")}<div class="list">${state.fields.map(f => `<button class="list-row"><div><strong>${f.name}</strong><small>${f.pitLeft} · ${f.pitRight}</small></div><span class="status good">ACTIVE</span></button>`).join("")}</div>`, "event-dashboard"); }
   function renderStaff() { page(`${topbar("Staff")}<div class="list">${state.staff.map(s => `<button class="list-row"><div><strong>${s.name}</strong><small>${s.role}</small></div><span>›</span></button>`).join("")}</div><div class="card empty" style="margin-top:12px">Backend connection will provide invitations and permission assignments.</div>`, "event-dashboard"); }
   function renderActivity() { const log = getEventLog(); page(`${topbar("Activity Log")}<section class="card"><span class="eyebrow">APPEND-ONLY LOCAL AUDIT</span><div class="list">${log.length ? log.slice().reverse().map(a => `<div class="list-row"><div><strong>${a.type.replaceAll("_", " ")}</strong><small>${new Date(a.at).toLocaleString()}</small></div><span class="status">${a.syncStatus}</span></div>`).join("") : `<div class="empty">Actions will appear here immediately, even offline.</div>`}</div></section>`, "event-dashboard"); }
   function renderPublishing() { page(`${topbar("Publishing Center")}<section class="card"><span class="eyebrow">PUBLIC OUTPUTS</span><div class="list"><div class="list-row"><div><strong>Public schedule</strong><small>Awaiting backend URL</small></div><span class="status warn">NOT CONNECTED</span></div><div class="list-row"><div><strong>Live scores</strong><small>Local controller state ready</small></div><span class="status good">READY</span></div><div class="list-row"><div><strong>PBNetwork.tv overlay</strong><small>Contract placeholder included</small></div><span class="status">SCAFFOLDED</span></div></div></section>`, "event-dashboard"); }
-  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">ACCOUNT</span><h2>${state.authMode === "member" ? (state.member?.screenName || state.member?.email || "PBN Member") : "Offline demo"}</h2><p class="muted">${state.authMode === "member" ? `${state.member?.email || ""} · securely remembered on this device` : "No PBN account is connected to this local demo."}</p>${state.authMode === "member" ? `<div class="button-row"><button class="secondary" data-action="sign-out">SIGN OUT</button><button class="danger" data-action="delete-account">DELETE ACCOUNT</button></div>` : ""}</section><section class="card" style="margin-top:12px"><span class="eyebrow">AUDIO CUES</span><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="field-reference-beep" ${state.audio?.countdownCue === "field-reference-beep" ? "selected" : ""}>Field controller reference</option><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : `Account service: ${DEFAULT_API_ORIGIN}`}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getEventLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
+  function renderSettings() { page(`${topbar("Settings & Recovery")}<section class="card"><span class="eyebrow">ACCOUNT</span><h2>${state.authMode === "member" ? (state.member?.screenName || state.member?.email || "PBN Member") : "Offline demo"}</h2><p class="muted">${state.authMode === "member" ? `${state.member?.email || ""} · securely remembered on this device` : "No PBN account is connected to this local demo."}</p>${state.authMode === "member" ? `<div class="button-row"><button class="secondary" data-action="sign-out">SIGN OUT</button><button class="danger" data-action="delete-account">DELETE ACCOUNT</button></div>` : ""}</section><section class="card" style="margin-top:12px"><span class="eyebrow">AUDIO CUES</span><button type="button" class="secondary wide" data-action="test-announcements">TEST ANNOUNCEMENTS</button><p class="muted">Play Base, the three point results, Game started, and Game stopped.</p><h2>Countdown sound</h2><p class="muted">Choose a sound. Each choice plays immediately so you can compare it.</p><div class="field"><label>Countdown beep</label><select id="countdownCue"><option value="field-reference-beep" ${state.audio?.countdownCue === "field-reference-beep" ? "selected" : ""}>Field controller reference</option><option value="scoreboard-beep" ${state.audio?.countdownCue === "scoreboard-beep" ? "selected" : ""}>Sharp electronic scoreboard</option><option value="referee-timer-beep" ${state.audio?.countdownCue === "referee-timer-beep" ? "selected" : ""}>Clean referee timer</option><option value="tournament-beep" ${state.audio?.countdownCue === "tournament-beep" ? "selected" : ""}>Loud tournament start system</option></select></div></section><section class="card" style="margin-top:12px"><span class="eyebrow">CONNECTION</span><h2>${state.connection.name}</h2><p class="muted">${state.connection.configured ? state.connection.baseUrl : `Account service: ${DEFAULT_API_ORIGIN}`}</p><button class="primary wide" data-action="connection">${state.connection.configured ? "UPDATE CONNECTION" : "SET UP CONNECTION"}</button></section><section class="card" style="margin-top:12px"><span class="eyebrow">RECOVERY</span><h2>Local event package</h2><p class="muted">${getEventLog().length} logged actions · ${state.sync.pending} awaiting sync</p><div class="button-row"><button class="secondary" data-action="export-log">EXPORT LOG</button><button class="danger" data-action="reset-all">RESET DEMO</button></div></section>`, "settings"); }
 
   function startFrame() { stopFrame(); const tick = () => { updateClocks(); frame = requestAnimationFrame(tick); }; frame = requestAnimationFrame(tick); }
   function stopFrame() { if (frame) cancelAnimationFrame(frame); frame = null; }
@@ -968,13 +996,20 @@ import { renderControllerView } from "./controller-view.js";
     const remaining = anchoredRemaining(c.activeAnchor);
     if (c.activeAnchor.kind === "break") {
       c.breakMs = remaining;
-      const el = $("#breakClock"); if (el) { el.textContent = formatMs(remaining); el.classList.toggle("warning", remaining <= 10000 && remaining > 0); }
+      const el = $("#breakClock"); if (el) { el.textContent = formatMs(remaining); el.classList.toggle("warning", isFinalBreakCountdown(remaining)); }
       announceCountdown(remaining);
       if (remaining <= 0) {
         c.breakMs = 0;
-        if (c.lastAnnouncement !== 0) { c.lastAnnouncement = 0; playCue("game-start-horn", synthHorn, () => speak("Game started")); }
         c.phase = "POINT_LIVE";
         startAnchor("game", c.gameMs);
+        const startedAt = c.activeAnchor.startedAt;
+        const matchId = c.activeMatch.id;
+        if (c.lastAnnouncement !== 0) {
+          c.lastAnnouncement = 0;
+          playCue("game-start-horn", synthHorn, () => {
+            if (state.controller.phase === "POINT_LIVE" && state.controller.activeMatch.id === matchId && state.controller.activeAnchor?.startedAt === startedAt) speak("Game started");
+          });
+        }
         logAction("GAME_CLOCK_AUTO_STARTED", { gameMs: c.gameMs });
         renderController();
       }
@@ -982,12 +1017,14 @@ import { renderControllerView } from "./controller-view.js";
       c.gameMs = remaining; c.activeMatch.gameMs = remaining;
       const el = $("#gameClock"); if (el && state.event?.matchTerms?.mode !== "RACE_TO") el.textContent = formatMs(remaining);
       if (remaining <= 0 && state.event?.matchTerms?.mode !== "RACE_TO") {
+        stopControllerAudio();
         snapshotController();
         const next = beginPointDraft(c, 0, { id: crypto.randomUUID(), at: now() });
         next.undoStack = c.undoStack;
         next.breakMs = next.nextBreakMs ?? next.breakDefaultMs;
         state.controller = next;
         logAction("GAME_CLOCK_EXPIRED", { matchId: next.activeMatch.id, awaitingDecision: true });
+        speak("Game stopped");
         renderController();
       }
     }
@@ -997,7 +1034,7 @@ import { renderControllerView } from "./controller-view.js";
     const seconds = Math.ceil(ms / 1000);
     if ([30, 20, 10].includes(seconds) && state.controller.lastAnnouncement !== seconds) {
       state.controller.lastAnnouncement = seconds;
-      speak(`${seconds} seconds`);
+      speak(`${seconds} seconds`, { interrupt: false });
       if (seconds === 10) playCountdownCue();
       return;
     }
@@ -1007,37 +1044,25 @@ import { renderControllerView } from "./controller-view.js";
     }
   }
   function playCountdownCue() { playCue(state.audio?.countdownCue || "field-reference-beep", () => tone(1450, .16)); }
-  function getCuePlayer(name) {
-    if (!cuePlayer) {
-      cuePlayer = new Audio();
-      cuePlayer.preload = "auto";
-      cuePlayer.setAttribute("playsinline", "");
-    }
-    if (cuePlayerName !== name) {
-      cuePlayer.pause();
-      cuePlayer.src = `./audio/${name}.mp3`;
-      cuePlayer.load();
-      cuePlayerName = name;
-    }
-    return cuePlayer;
-  }
   function unlockCueAudio() {
-    const player = getCuePlayer(state.audio?.countdownCue || "field-reference-beep");
-    player.volume = 0;
-    const attempt = player.play();
-    if (!attempt?.then) { player.volume = 1; return Promise.resolve(); }
-    return attempt.then(() => { player.pause(); player.currentTime = 0; player.volume = 1; }).catch(() => { player.volume = 1; });
+    return controllerAudio.prepare(state.audio?.countdownCue || "field-reference-beep");
+  }
+  function stopControllerAudio() {
+    cueSequence += 1;
+    clearTimeout(cueCompletionTimer);
+    cueCompletionTimer = null;
+    void controllerAudio.stop();
   }
   function playCue(name, fallback, onFinished) {
-    try {
-      const player = getCuePlayer(name);
-      player.pause();
-      player.currentTime = 0;
-      player.volume = 1;
-      player.onended = onFinished || null;
-      const attempt = player.play();
-      if (attempt?.catch) attempt.catch(() => { fallback?.(); if (onFinished) setTimeout(onFinished, 2050); });
-    } catch { fallback?.(); if (onFinished) setTimeout(onFinished, 2050); }
+    const sequence = ++cueSequence;
+    clearTimeout(cueCompletionTimer);
+    cueCompletionTimer = null;
+    const finish = () => { if (sequence === cueSequence) onFinished?.(); };
+    void controllerAudio.playCue(name).then(finish, error => {
+      if (sequence !== cueSequence || isAudioCancellation(error)) return;
+      fallback?.();
+      if (onFinished) cueCompletionTimer = setTimeout(finish, 2050);
+    });
   }
   function ensureAudio() {
     try {
@@ -1059,7 +1084,12 @@ import { renderControllerView } from "./controller-view.js";
       gain.gain.setValueAtTime(.68, ctx.currentTime); gain.gain.exponentialRampToValueAtTime(.001, ctx.currentTime + 2);
     } catch { /* Audio is an enhancement. */ }
   }
-  function speak(text) { try { speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.rate = .86; utterance.volume = 1; speechSynthesis.speak(utterance); } catch { /* Audio is an enhancement. */ } }
+  function speak(text, options) { void controllerAudio.say(text, options); }
+  function testAnnouncements() {
+    stopControllerAudio();
+    void unlockCueAudio();
+    ["Base", "Point approved", "Point reversed", "No points", "Game started", "Game stopped"].forEach((text, index) => speak(text, { interrupt: index === 0 }));
+  }
   function snapshotController() {
     const { undoStack, ...current } = state.controller;
     const snapshot = clone(current);
@@ -1078,6 +1108,7 @@ import { renderControllerView } from "./controller-view.js";
     if (controllerEditingLocked()) return;
     const c = state.controller;
     if (!["BREAK_RUNNING", "POINT_LIVE", "BREAK_PAUSED", "GAME_PAUSED"].includes(c.phase)) return;
+    stopControllerAudio();
     snapshotController();
     if (c.phase === "BREAK_RUNNING") {
       c.breakMs = c.activeAnchor ? anchoredRemaining(c.activeAnchor) : c.breakMs;
@@ -1098,12 +1129,14 @@ import { renderControllerView } from "./controller-view.js";
     const paused = c.phase.endsWith("PAUSED");
     logAction(paused ? "CLOCK_PAUSED" : "CLOCK_RESUMED", { phase: c.phase });
     if (paused) speak("Game stopped");
+    else if (c.phase === "POINT_LIVE") speak("Game started");
     renderController();
   }
   function base() {
     if (controllerEditingLocked()) return;
     const c = state.controller;
     if (!["POINT_LIVE", "GAME_PAUSED"].includes(c.phase)) return;
+    stopControllerAudio();
     const remaining = c.activeAnchor ? anchoredRemaining(c.activeAnchor) : c.gameMs;
     const next = beginPointDraft(c, remaining, { id: crypto.randomUUID(), at: now() });
     next.breakMs = next.nextBreakMs ?? next.breakDefaultMs;
@@ -1159,6 +1192,7 @@ import { renderControllerView } from "./controller-view.js";
       if (currentDeckStyle() === "split" && !c.inactiveMatch) return toast("No second match is assigned to this event.");
       try {
         const result = commitPointDraft(c, { at: now() });
+        stopControllerAudio();
         snapshotController();
         result.controller.undoStack = c.undoStack;
         state.controller = result.controller;
@@ -1173,6 +1207,7 @@ import { renderControllerView } from "./controller-view.js";
       return;
     }
     if (c.phase !== "READY") return;
+    stopControllerAudio();
     snapshotController();
     const ms = c.breakMs || c.breakDefaultMs;
     c.breakMs = ms;
@@ -1250,7 +1285,7 @@ import { renderControllerView } from "./controller-view.js";
       const ms = c.activeAnchor.kind === "break" ? c.breakMs : c.gameMs;
       c.activeAnchor = { kind: c.activeAnchor.kind, startedAt: Date.now(), startingMs: ms };
     }
-    try { speechSynthesis.cancel(); } catch { /* Silent recovery is still available. */ }
+    stopControllerAudio();
     logAction("UNDO");
     renderController();
   }
@@ -1316,6 +1351,132 @@ import { renderControllerView } from "./controller-view.js";
     modalBody.innerHTML = `<h2>Start a Scrimmage</h2><p class="muted">Single Deck is the simplest two-team setup. Choose Split Deck when four teams are rotating.</p><div class="field-grid"><div class="field"><label>Deck style</label><select id="scrimmageDeck"><option value="single">Single Deck (2 teams)</option><option value="split">Split Deck (4 teams)</option></select></div><div class="field"><label>Scoring format</label><select id="scrimmageFormat"><option value="race-to">Race-to</option><option value="uncapped">Uncapped points</option></select></div><div class="field"><label>Point limit</label><select id="scrimmagePointLimit">${[1,2,3,4,5,6,7].map(n => `<option value="${n}" ${n === 3 ? "selected" : ""}>${n} points</option>`).join("")}</select></div><div class="field"><label>Left team</label><input id="scrimmageLeft" value="TEAM 1" maxlength="24"></div><div class="field"><label>Right team</label><input id="scrimmageRight" value="TEAM 2" maxlength="24"></div><div id="splitDeckTeams" class="field-grid hidden"><div class="field"><label>Second match — left team</label><input id="scrimmageNextLeft" value="TEAM 3" maxlength="24"></div><div class="field"><label>Second match — right team</label><input id="scrimmageNextRight" value="TEAM 4" maxlength="24"></div></div></div><button class="primary wide" style="margin-top:16px" type="button" data-action="start-scrimmage">OPEN CONTROLLER</button>`;
     modal.showModal();
   }
+  function localDateValue() {
+    const today = new Date();
+    return [today.getFullYear(), String(today.getMonth() + 1).padStart(2, "0"), String(today.getDate()).padStart(2, "0")].join("-");
+  }
+  function parkActiveWorkspace() {
+    if (coinConfirming) {
+      toast("Wait for the current result to finish saving, then try again.");
+      return false;
+    }
+    stopFrame();
+    stopControllerAudio();
+    const controller = state.controller;
+    const anchor = controller?.activeAnchor;
+    if (anchor) {
+      const remaining = anchoredRemaining(anchor);
+      if (anchor.kind === "break") {
+        controller.breakMs = remaining;
+        controller.phase = "BREAK_PAUSED";
+      } else {
+        controller.gameMs = remaining;
+        if (controller.activeMatch) controller.activeMatch.gameMs = remaining;
+        controller.phase = "GAME_PAUSED";
+      }
+      controller.activeAnchor = null;
+    }
+    save();
+    return true;
+  }
+  function resumeSavedSession(eventId) {
+    const stored = state.eventWorkspaces?.[eventId];
+    if (!stored?.event || stored.event.id !== eventId) return toast("That saved session could not be found on this device.");
+    if (stored.event.source === "PBN") {
+      const shared = (state.remoteEvents || []).find(event => event.id === eventId);
+      if (!shared) return toast("Reopen this shared event from My PBN events when it is available.");
+      return void activateRemoteEvent(shared);
+    }
+    if (state.activeEventId === eventId) return route(state.session?.active ? "live-controller" : "event-dashboard");
+    const workspace = clone(stored);
+    if (!parkActiveWorkspace()) return;
+    state.activeEventId = eventId;
+    state.event = workspace.event;
+    if (workspace.league) state.league = workspace.league;
+    for (const key of ["divisions", "teams", "fields", "staff", "schedule", "standings"]) state[key] = clone(workspace[key] || []);
+    state.controller = normalizeControllerState(workspace.controller || emptyControllerForEvent(eventId));
+    // A saved session is reopened at its saved clock, never restarted in the background.
+    if (state.controller.activeAnchor) {
+      const anchor = state.controller.activeAnchor;
+      const remaining = anchoredRemaining(anchor);
+      if (anchor.kind === "break") state.controller.breakMs = remaining;
+      else {
+        state.controller.gameMs = remaining;
+        if (state.controller.activeMatch) state.controller.activeMatch.gameMs = remaining;
+      }
+      state.controller.phase = anchor.kind === "break" ? "BREAK_PAUSED" : "GAME_PAUSED";
+      state.controller.activeAnchor = null;
+    }
+    state.scheduleDraft = clone(workspace.scheduleDraft || { ...defaultState.scheduleDraft, eventId, fields: state.fields.length, generated: false, published: false });
+    state.session = clone(workspace.session || { ...defaultState.session, eventId, label: state.event.name });
+    coinConfirming = false;
+    logAction("SAVED_SESSION_OPENED", { eventId });
+    route(state.session.active && state.controller.activeMatch ? "live-controller" : "event-dashboard");
+  }
+  function showNewEventSetup() {
+    const date = localDateValue();
+    modalBody.innerHTML = `<h2>Start New Event</h2><span class="eyebrow">LOCAL PLANNED EVENT</span><p class="muted">Create an event on this device with its own opening matches. Shared PBN events and event codes are created on PBNetwork.tv.</p>
+      ${state.session?.active ? `<p class="muted">Creating this event pauses and saves your current session so you can return to it.</p>` : ""}
+      <div class="field-grid">
+        <div class="field"><label for="newEventName">Event name</label><input id="newEventName" maxlength="100" required placeholder="Practice day or tournament name"></div>
+        <div class="field"><label for="eventStartDate">Date</label><input id="eventStartDate" type="date" value="${date}" required></div>
+        <div class="field"><label for="newEventStartTime">First match</label><input id="newEventStartTime" type="time" value="09:00" required></div>
+        <div class="field" hidden><label for="venueRegion">Venue region</label><select id="venueRegion"><option value="">All regions</option></select></div>
+        <div class="field"><label for="eventVenue">Venue</label><select id="eventVenue" required>${optionMarkup(venueOptions("", ""), "")}</select></div>
+        <div class="field" hidden><label for="customVenue">Venue name</label><input id="customVenue" maxlength="160" disabled></div>
+        ${selectField("eventFormat", "Scoring preset", SCORING_PRESETS, "Race-to")}
+        ${selectField("eventPointLimit", "Race-to points", numberOptions(1, 7, n => `${n} ${n === 1 ? "point" : "points"}`), 3)}
+        ${selectField("newEventDeck", "Deck style", [["single", "Single Deck (2 teams)"], ["split", "Split Deck (4 teams)"]], "single")}
+        ${selectField("newEventField", "Opening field", numberOptions(1, 32, n => `Field ${n}`), 1)}
+        <div class="field"><label for="newEventDivision">Opening division</label><input id="newEventDivision" value="Open" maxlength="60" required></div>
+        <div class="field"><label for="newEventLeft">Game 1 — left team</label><input id="newEventLeft" maxlength="24" required placeholder="Team 1"></div>
+        <div class="field"><label for="newEventRight">Game 1 — right team</label><input id="newEventRight" maxlength="24" required placeholder="Team 2"></div>
+        <div id="newEventSplitTeams" class="field-grid hidden"><div class="field"><label for="newEventNextLeft">Game 2 — left team</label><input id="newEventNextLeft" maxlength="24" required disabled placeholder="Team 3"></div><div class="field"><label for="newEventNextRight">Game 2 — right team</label><input id="newEventNextRight" maxlength="24" required disabled placeholder="Team 4"></div></div>
+      </div><div class="button-row"><button class="secondary" value="cancel" formnovalidate>CANCEL</button><button class="primary" type="button" data-action="create-local-event">CREATE EVENT</button></div>`;
+    modal.querySelector(".close").formNoValidate = true;
+    modal.showModal();
+    refreshVenueOptions();
+    updateEventPointLimit("Race-to");
+    loadVenueDirectory();
+  }
+  function createLocalEvent() {
+    if (!modal.querySelector("form").reportValidity()) return;
+    const name = $("#newEventName").value.trim();
+    const date = $("#eventStartDate").value;
+    const startTime = $("#newEventStartTime").value;
+    const venue = $("#eventVenue").value === OTHER_VENUE ? $("#customVenue").value.trim() : $("#eventVenue").value;
+    const format = $("#eventFormat").value;
+    const pointLimit = format === "Race-to" ? Number($("#eventPointLimit").value) : null;
+    const deckStyle = $("#newEventDeck").value;
+    const fieldName = `Field ${$("#newEventField").value}`;
+    const divisionName = $("#newEventDivision").value.trim();
+    const teams = [$("#newEventLeft").value.trim(), $("#newEventRight").value.trim()];
+    if (deckStyle === "split") teams.push($("#newEventNextLeft").value.trim(), $("#newEventNextRight").value.trim());
+    if (!name || !venue || !divisionName || teams.some(team => !team)) return toast("Enter an event name, venue, division, and each team name.");
+    const eventId = `local-event-${crypto.randomUUID()}`;
+    if (!parkActiveWorkspace()) return;
+    state.activeEventId = eventId;
+    state.event = { id: eventId, source: "local", eventType: "Planned event", name, startDate: date, endDate: date, startTime, date: remoteEventDateLabel({ startDate: date, endDate: date, startTime }), venue, format, pointLimit, deckStyle, status: "Draft" };
+    state.league = { id: `${eventId}-league`, name: "Local planned event", season: date.slice(0, 4) };
+    const divisionId = `${eventId}-division-1`;
+    const fieldId = `${eventId}-field-1`;
+    state.divisions = [{ id: divisionId, name: divisionName, teams: teams.length, format }];
+    state.teams = teams;
+    state.fields = [{ id: fieldId, name: fieldName, pitLeft: "Pit 1", pitRight: "Pit 2" }];
+    state.staff = [];
+    state.standings = [];
+    const [hours, minutes] = startTime.split(":").map(Number);
+    state.schedule = Array.from({ length: teams.length / 2 }, (_, index) => {
+      const slot = (hours * 60 + minutes + index * 20) % (24 * 60);
+      return { id: `${eventId}-match-${index + 1}`, eventId, divisionId, fieldId, time: `${String(Math.floor(slot / 60)).padStart(2, "0")}:${String(slot % 60).padStart(2, "0")}`, field: fieldName, left: teams[index * 2], right: teams[index * 2 + 1], status: index ? "Scheduled" : "On deck" };
+    });
+    state.controller = emptyControllerForEvent(eventId);
+    state.scheduleDraft = { ...clone(defaultState.scheduleDraft), eventId, step: 1, days: 1, fields: 1, start: startTime, breaks: "", generated: true, published: false, version: 1 };
+    state.session = { active: false, type: "event", eventId, label: name, format, pointLimit, deckStyle };
+    logAction("LOCAL_EVENT_CREATED", { eventId, deckStyle, teams: teams.length, matches: state.schedule.length });
+    modal.close();
+    route("event-dashboard");
+  }
   function teamId(prefix) { return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2,7)}`; }
   function scrimmageMatch(id, left, right, eventId = state.activeEventId || state.event?.id || null) {
     const leftTeamId = teamId(`${id}-left`);
@@ -1330,10 +1491,10 @@ import { renderControllerView } from "./controller-view.js";
     const deckStyle = $("#scrimmageDeck").value;
     const c = clone(defaultState.controller);
     const localEventId = `local-scrimmage-${crypto.randomUUID()}`;
+    if (!parkActiveWorkspace()) return;
     state.activeEventId = localEventId;
-    const today = new Date();
-    const date = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, "0"), String(today.getDate()).padStart(2, "0")].join("-");
-    state.event = { id: localEventId, source: "local", name: `${left} vs ${right}`, date, startDate: date, endDate: date, venue: "Local practice", format, pointLimit: format === "race-to" ? pointLimit : "", status: "Local" };
+    const date = localDateValue();
+    state.event = { id: localEventId, source: "local", eventType: "Paintball scrimmage", name: `${left} vs ${right}`, date, startDate: date, endDate: date, venue: "Local practice", format, pointLimit: format === "race-to" ? pointLimit : "", status: "Local" };
     c.eventId = localEventId;
     c.activeMatch = scrimmageMatch(`scrimmage-${Date.now()}`, left, right, localEventId);
     if (deckStyle === "split") {
@@ -1341,7 +1502,15 @@ import { renderControllerView } from "./controller-view.js";
       const nextRight = $("#scrimmageNextRight").value.trim() || "TEAM 4";
       c.inactiveMatch = scrimmageMatch(`scrimmage-next-${Date.now()}`, nextLeft, nextRight, localEventId);
     } else c.inactiveMatch = null;
-    state.controller = c;
+    state.controller = normalizeControllerState(c);
+    state.league = { id: `${localEventId}-league`, name: "Local practice", season: date.slice(0, 4) };
+    state.divisions = [];
+    state.teams = [c.activeMatch.leftTeam, c.activeMatch.rightTeam, ...(c.inactiveMatch ? [c.inactiveMatch.leftTeam, c.inactiveMatch.rightTeam] : [])];
+    state.fields = [{ id: `${localEventId}-field-1`, name: "Practice field", pitLeft: "Pit 1", pitRight: "Pit 2" }];
+    state.staff = [];
+    state.schedule = [];
+    state.standings = [];
+    state.scheduleDraft = { ...clone(defaultState.scheduleDraft), eventId: localEventId, days: 1, fields: 1, generated: false, published: false };
     state.session = { active: true, type: "scrimmage", eventId: localEventId, label: `${left} vs ${right}`, format, pointLimit, deckStyle };
     logAction("SCRIMMAGE_STARTED", { left, right, format, pointLimit, deckStyle });
     modal.close();
@@ -1445,10 +1614,14 @@ import { renderControllerView } from "./controller-view.js";
   }
 
   async function activateRemoteEvent(selected) {
+    if (coinConfirming) return toast("Wait for the current result to finish saving, then try again.");
+    const previousEventId = state.activeEventId;
     save();
     await restoreControllerWorkspace(selected.id);
+    if (state.activeEventId !== previousEventId || modal.open) return;
     const eventId = selected.id;
     const stored = state.eventWorkspaces?.[eventId];
+    if (eventId !== state.activeEventId && !parkActiveWorkspace()) return;
     const eventRecord = {
       ...(stored?.event || {}),
       id: eventId,
@@ -1481,6 +1654,7 @@ import { renderControllerView } from "./controller-view.js";
     state.activeEventId = eventId;
     coinConfirming = false;
     state.event = eventRecord;
+    if (stored?.league) state.league = clone(stored.league);
     state.divisions = clone(stored?.divisions || (Array.isArray(selected.divisions) ? selected.divisions : []));
     state.teams = clone(stored?.teams || (Array.isArray(selected.teams) ? selected.teams : []));
     state.fields = clone(stored?.fields || (Array.isArray(selected.fields) ? selected.fields : []));
@@ -1518,9 +1692,13 @@ import { renderControllerView } from "./controller-view.js";
     else if (action === "confirm-delete-account") deleteAccount();
     else if (action === "open-scrimmage") showScrimmageSetup();
     else if (action === "start-scrimmage") startScrimmage();
+    else if (action === "open-new-event") showNewEventSetup();
+    else if (action === "create-local-event") createLocalEvent();
+    else if (action === "resume-saved-session") resumeSavedSession(button.dataset.eventId);
     else if (action === "run-event") runEvent();
     else if (action === "connection") showConnection();
     else if (action === "save-connection") saveConnection();
+    else if (action === "test-announcements") testAnnouncements();
     else if (action === "schedule-back") {
       saveScheduleStep(button.form);
       state.scheduleDraft.step = Math.max(1, state.scheduleDraft.step - 1);
@@ -1576,6 +1754,11 @@ import { renderControllerView } from "./controller-view.js";
     if (event.target.id === "connectionMode") updateConnectionMode(event.target.value);
     if (event.target.id === "staffDay") { staffDay = event.target.value || null; renderStaffJoin(); $("#staffDay")?.focus(); }
     if (event.target.id === "scrimmageDeck") $("#splitDeckTeams")?.classList.toggle("hidden", event.target.value !== "split");
+    if (event.target.id === "newEventDeck") {
+      const split = event.target.value === "split";
+      $("#newEventSplitTeams")?.classList.toggle("hidden", !split);
+      for (const id of ["#newEventNextLeft", "#newEventNextRight"]) if ($(id)) $(id).disabled = !split;
+    }
     if (event.target.id === "scrimmageFormat") $("#scrimmagePointLimit")?.closest(".field")?.classList.toggle("hidden", event.target.value === "uncapped");
     if (event.target.id === "countdownCue") { state.audio = { ...(state.audio || {}), countdownCue: event.target.value }; save(); playCountdownCue(); }
   });

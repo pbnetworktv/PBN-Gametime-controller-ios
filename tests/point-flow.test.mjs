@@ -123,7 +123,7 @@ test("No points discards staged edits and records an unchanged-score result with
   assert.equal(previewPointScore(draft, "right"), 1);
   assert.throws(() => adjustPointScore(draft, "left", 1), /leaves both scores unchanged/);
   const result = commitPointDraft(draft);
-  assert.equal(result.voice, "No point");
+  assert.equal(result.voice, "No points");
   assert.equal(result.controller.activeMatch.leftScore, 2);
   assert.equal(result.controller.activeMatch.rightScore, 1);
   assert.equal(result.controller.activeMatch.leftPhysicalTeamId, "alpha");
@@ -213,6 +213,6 @@ test("invalid type, pit, or adjustment inputs cannot mutate the controller", () 
   assert.throws(() => adjustPointScore(selected, "left", Number.NaN), /whole-point/);
   assert.deepEqual(selected.pointDraft.deltas, { alpha: 0, bravo: 0 });
   assert.deepEqual(POINT_TYPES.map(({ kind, voice }) => [kind, voice]), [
-    ["approve", "Point approved"], ["reverse", "Point reversed"], ["none", "No point"]
+    ["approve", "Point approved"], ["reverse", "Point reversed"], ["none", "No points"]
   ]);
 });
