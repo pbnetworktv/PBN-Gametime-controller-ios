@@ -1,9 +1,18 @@
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
+import { renderControllerView } from "../src/controller-view.js";
 
 const app = await readFile(new URL("../src/app.js", import.meta.url), "utf8");
 const index = await readFile(new URL("../src/index.html", import.meta.url), "utf8");
+
+const active = { label: "Game 1", leftName: "ALPHA", rightName: "BRAVO", leftScore: 2, rightScore: 1, gameClock: "08:42", breakClock: "02:00", status: "Clock stopped" };
+const liveView = (overrides = {}) => renderControllerView({
+  active, phase: "POINT_STOPPED_WAITING_DECISION", selectedType: "approve",
+  baseEnabled: true, pauseEnabled: true, scoreEnabled: true, typeEnabled: true,
+  startBreakEnabled: true, undoEnabled: true, ...overrides
+});
+
 
 test("authoritative anchors drive break and game clocks", () => {
   assert.match(app, /startedAt: Date\.now\(\)/);
@@ -11,15 +20,16 @@ test("authoritative anchors drive break and game clocks", () => {
   assert.match(app, /GAME_CLOCK_AUTO_STARTED/);
 });
 
-test("live controls and correction semantics are distinct", () => {
-  assert.match(app, /BUZZER_LEFT/);
-  assert.match(app, /BUZZER_RIGHT/);
-  assert.match(app, /POINT_STOPPED_WAITING_DECISION/);
-  assert.match(app, /decide\("approve"\)/);
-  assert.match(app, /decide\("reverse"\)/);
-  assert.match(app, /decide\("no_point"\)/);
-  assert.match(app, /UNDO/);
-  assert.doesNotMatch(app, /reset-controller/);
+test("the controller exposes one Base, one Pause and one point-type selector", () => {
+  const html = liveView();
+  for (const action of ["base", "pause", "start-break"]) {
+    assert.equal((html.match(new RegExp('data-action="' + action + '"', "g")) || []).length, 1);
+  }
+  assert.equal((html.match(/data-action="point-type"/g) || []).length, 3);
+  assert.equal((html.match(/data-action="score-(?:plus|minus)"/g) || []).length, 4);
+  assert.match(html, /No points/);
+  assert.match(html, /Undo last action/);
+  assert.doesNotMatch(html, /LEFT BASE|RIGHT BASE|AWARD POINT/);
 });
 
 test("break clock supports announcements, countdown cues, and separate default mode", () => {
@@ -48,7 +58,7 @@ test("reference and alternate countdown sounds are bundled into settings", () =>
 });
 
 test("pause control exposes resume state and viewport zoom is disabled", () => {
-  assert.match(app, /▶ RESUME/);
+  assert.match(liveView({ paused: true }), /<span>Resume<\/span>/);
   assert.match(index, /maximum-scale=1,user-scalable=no/);
 });
 
@@ -75,15 +85,20 @@ test("scrimmages support explicit single and split deck behavior", () => {
   assert.match(app, /Single Deck \(2 teams\)/);
   assert.match(app, /Split Deck \(4 teams\)/);
   assert.match(app, /deckStyle === "split"/);
-  assert.match(app, /SINGLE DECK SCRIMMAGE/);
+  assert.doesNotMatch(liveView({ inactive: null }), /class="arena-inactive"/);
   assert.match(app, /leftPhysicalTeamId/);
   assert.match(app, /rightPhysicalTeamId/);
 });
 
-test("base decisions award the team opposite the hit base", () => {
-  assert.match(app, /const scoringSide = side === "left" \? "right" : "left"/);
-  assert.match(app, /const scoringPhysicalSide = kind === "approve" \? scoringSide : kind === "reverse" \? side : null/);
-  assert.match(app, /ACTIVE_INACTIVE_SWAPPED/);
+test("point types stay distinct and score controls identify the team in each physical pit", () => {
+  const html = liveView({ selectedType: "reverse" });
+  assert.match(html, /data-kind="reverse" aria-pressed="true"/);
+  assert.match(html, /data-kind="approve" aria-pressed="false"/);
+  assert.match(html, /data-side="left" aria-label="Add one point to ALPHA, Pit 1"/);
+  assert.match(html, /data-side="right" aria-label="Subtract one point from BRAVO, Pit 2"/);
+  const swapped = liveView({ active: { ...active, leftName: "BRAVO", rightName: "ALPHA", leftScore: 1, rightScore: 2 } });
+  assert.match(swapped, /data-side="left" aria-label="Add one point to BRAVO, Pit 1"/);
+  assert.match(swapped, /data-side="right" aria-label="Add one point to ALPHA, Pit 2"/);
 });
 
 test("member sessions persist securely across app launches", () => {
