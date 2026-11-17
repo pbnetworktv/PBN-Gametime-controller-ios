@@ -1,7 +1,7 @@
 export const POINT_TYPES = Object.freeze([
   Object.freeze({ kind: "approve", label: "Approve", voice: "Point approved" }),
   Object.freeze({ kind: "reverse", label: "Reverse", voice: "Point reversed" }),
-  Object.freeze({ kind: "none", label: "No points", voice: "No point" })
+  Object.freeze({ kind: "none", label: "No points", voice: "No points" })
 ]);
 
 const WAITING = "POINT_STOPPED_WAITING_DECISION";

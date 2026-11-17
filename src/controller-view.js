@@ -15,6 +15,10 @@ const icon = (name) => {
 
 const disabled = (enabled) => enabled ? "" : " disabled";
 
+export function isFinalBreakCountdown(milliseconds) {
+  return Number.isFinite(milliseconds) && milliseconds >= 0 && milliseconds <= 10000;
+}
+
 function inactiveMarkup(match) {
   if (!match) return "";
   return `<section class="arena-inactive" aria-label="${escape(match.label || "Game 2")}, inactive">

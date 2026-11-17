@@ -1,6 +1,6 @@
 node_modules/
 www/
-ios/
+/ios/
 .DS_Store
 *.xcarchive
 *.ipa
