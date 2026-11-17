@@ -2,6 +2,8 @@ import { App } from "@capacitor/app";
 import { staffInviteFromLink, staffInviteLink } from "./staff-invite.js";
 import { SecureStorage } from "@aparajita/capacitor-secure-storage";
 import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } from "./controller-rules.js";
+import { beginPointDraft, normalizePointDraft, selectPointType, adjustPointScore, previewPointScore, commitPointDraft } from "./point-flow.js";
+import { renderControllerView } from "./controller-view.js";
 
 (() => {
   "use strict";
@@ -62,6 +64,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       activeMatch: { id: "m1", leftTeamId: "m1-left", rightTeamId: "m1-right", leftTeam: "RED LEGION", rightTeam: "DAMAGE", leftScore: 0, rightScore: 0, leftPhysicalTeamId: "m1-left", rightPhysicalTeamId: "m1-right", leftPhysicalTeam: "RED LEGION", rightPhysicalTeam: "DAMAGE", gameMs: 600000 },
       inactiveMatch: { id: "m2", leftTeamId: "m2-left", rightTeamId: "m2-right", leftTeam: "AFTERMATH", rightTeam: "DYNASTY", leftScore: 0, rightScore: 0, leftPhysicalTeamId: "m2-left", rightPhysicalTeamId: "m2-right", leftPhysicalTeam: "AFTERMATH", rightPhysicalTeam: "DYNASTY", gameMs: 600000 },
       pendingBaseSide: null,
+      pointDraft: null,
       pointHistory: [],
       undoStack: [],
       lastAnnouncement: null
@@ -70,6 +73,22 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     activity: [],
     sync: { pending: 0, lastSync: null }
   };
+
+  function normalizeControllerState(controller) {
+    let next = { ...clone(defaultState.controller), ...controller };
+    next.undoStack = Array.isArray(next.undoStack) ? next.undoStack : [];
+    next.pointHistory = Array.isArray(next.pointHistory) ? next.pointHistory : [];
+    if (next.activeMatch) next.activeMatch.gameNumber ||= next.inactiveMatch?.gameNumber === 1 ? 2 : 1;
+    if (next.inactiveMatch) next.inactiveMatch.gameNumber ||= next.activeMatch?.gameNumber === 1 ? 2 : 1;
+    try {
+      next = normalizePointDraft(next);
+      delete next.pointDraftError;
+    } catch (error) {
+      // Preserve a mismatched draft for recovery instead of resetting saved matches.
+      next.pointDraftError = error.message;
+    }
+    return next;
+  }
 
   function loadState() {
     try {
@@ -97,14 +116,16 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
         migrated.session.deckStyle = controllerDeckStyle(configuredDeck, Boolean(migrated.controller.inactiveMatch));
         if (migrated.session.deckStyle === "single") migrated.controller.inactiveMatch = null;
       }
+      migrated.controller = normalizeControllerState(migrated.controller);
+      for (const workspace of Object.values(migrated.eventWorkspaces || {})) {
+        if (workspace?.controller) workspace.controller = normalizeControllerState(workspace.controller);
+      }
       return migrated;
     } catch { return clone(defaultState); }
   }
 
   let state = loadState();
   let frame = null;
-  let pointConfirmationTimer = null;
-  let sideSwapTimer = null;
   let clockPickerMode = "jump";
   let audioContext = null;
   let cuePlayer = null;
@@ -380,6 +401,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   }
   function route(name) {
     stopFrame();
+    if (modal.open) modal.close();
     state.route = name;
     save();
     render();
@@ -809,59 +831,118 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   }
   function matchRow(m) { return `<div class="list-row"><div><strong>${m.left} vs ${m.right}</strong><small>${m.time} · ${m.field}</small></div><span class="status">${m.status}</span></div>`; }
 
+  function controllerEditingLocked() {
+    return Boolean(state.event?.coinResult || coinConfirming);
+  }
+  function currentDeckStyle() {
+    return controllerDeckStyle(state.event?.matchTerms?.deckStyle || state.event?.deckStyle || state.session?.deckStyle, Boolean(state.controller.inactiveMatch));
+  }
+  function controllerStatus(controller) {
+    if (controller.pointDraftError) return controller.pointDraftError;
+    return ({
+      READY: "Ready to start",
+      POINT_LIVE: "Point in play",
+      GAME_PAUSED: "Game paused",
+      BREAK_RUNNING: "Break running",
+      BREAK_PAUSED: "Break paused",
+      POINT_STOPPED_WAITING_DECISION: "Clock stopped",
+      POINT_CONFIRMED: "Point saved",
+      MATCH_COMPLETE: "Match complete"
+    })[controller.phase] || "Clock stopped";
+  }
   function renderController() {
     if (!state.controller?.activeMatch) {
-      page(`${topbar("Live Controller", "event-dashboard")}<section class="card empty"><h2>No match is ready</h2><p>This event has no scheduled teams yet. Add teams and build its schedule before opening the controller.</p><small>Event ID: ${escapeHtml(state.activeEventId || state.event?.id || "")}</small></section>`, "event-dashboard");
+      page(topbar("Live Controller", "event-dashboard") + '<section class="card empty"><h2>No match is ready</h2><p>This event has no scheduled teams yet. Add teams and build its schedule before opening the controller.</p><small>Event ID: ' + escapeHtml(state.activeEventId || state.event?.id || "") + '</small></section>', "event-dashboard");
       return;
     }
-    const configuredDeck = state.event?.matchTerms?.deckStyle || state.event?.deckStyle || state.session?.deckStyle;
-    const singleDeck = controllerDeckStyle(configuredDeck, Boolean(state.controller.inactiveMatch)) === "single";
-    const splitScrimmage = state.session?.type === "scrimmage" && state.session.deckStyle === "split";
-    const nextRows = singleDeck ? "" : splitScrimmage
-      ? `<div class="next-row"><span>${state.controller.inactiveMatch.leftTeam}</span><b>VS</b><span>${state.controller.inactiveMatch.rightTeam}</span><span>ON DECK</span></div>`
-      : state.schedule.slice(1,6).map(m => `<div class="next-row"><span>${m.left}</span><b>VS</b><span>${m.right}</span><span>${m.time}</span></div>`).join("");
-    page(`<div class="controller-bg"><header class="controller-head"><button class="reset-preview" data-action="undo" aria-label="Undo last controller action" title="Undo last action">↶</button><h1 class="brand">PBN</h1><p class="subtitle">GAME TIME CONTROLLER</p>${eventCodeControl()}</header>
-      ${singleDeck ? `<div class="controller-mode">SINGLE DECK SCRIMMAGE</div>` : renderOnDeckScorebug(state.controller.inactiveMatch)}
-      <section class="active-game"><span class="pit-label left">PIT 1</span><span class="pit-label right">PIT 2</span><div class="match-grid ${state.controller.sideSwapFading ? "side-swap-fade" : ""}"><div class="team-panel"><h3>${state.controller.activeMatch.leftPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "left" ? "score-flash" : ""}">${scoreForPhysical("left")}</strong></div><div class="clock-panel"><span class="clock-label">GAME TIME</span><strong id="gameClock" class="game-clock">${state.event?.matchTerms?.mode === "RACE_TO" ? "TO " + state.event.matchTerms.raceTo : formatMs(state.controller.gameMs)}</strong><button id="breakClock" class="break-clock ${state.controller.breakMs <= 10000 && state.controller.breakMs > 0 ? "warning" : ""}" data-action="set-break" aria-label="Set break clock">${formatMs(state.controller.breakMs)}</button></div><div class="team-panel"><h3>${state.controller.activeMatch.rightPhysicalTeam}</h3><strong class="${state.controller.pointConfirmation?.scoringPhysicalSide === "right" ? "score-flash" : ""}">${scoreForPhysical("right")}</strong></div></div></section>
-      <div class="controls"><div class="score-control"><button data-action="score-minus" data-side="left">−</button><button data-action="score-plus" data-side="left">＋</button></div><button class="pause" data-action="pause">${state.controller.phase === "BREAK_PAUSED" || state.controller.phase === "GAME_PAUSED" ? "▶ RESUME" : "Ⅱ&nbsp; PAUSE"}</button><div class="score-control"><button data-action="score-plus" data-side="right">＋</button><button data-action="score-minus" data-side="right">−</button></div></div>
-      ${state.event?.matchTerms ? `<section class="controller-card"><details><summary>AGREED MATCH RULES · REVISION ${state.event.agreementRevision}</summary><p>${escapeHtml(state.event.matchTerms.equipment)} · ${escapeHtml(state.event.matchTerms.fieldType)} · ${state.event.matchTerms.breakSeconds}s breaks</p><p>${escapeHtml(state.event.matchTerms.penaltyRules)}</p></details><div class="button-row">${['left','right'].map(side=>`<button class="secondary" data-action="team-timeout" data-side="${side}">${side.toUpperCase()} TIMEOUT (${Math.max(0,state.event.matchTerms.timeoutsPerTeam-(state.controller.timeoutsUsed?.[side==='left'?state.controller.activeMatch.leftPhysicalTeamId:state.controller.activeMatch.rightPhysicalTeamId]||0))})</button>`).join('')}</div></section>` : ''}
-      ${controllerMainButton()}${state.controller.phase === "POINT_STOPPED_WAITING_DECISION" ? decisionPanel() : ""}${state.controller.phase === "POINT_CONFIRMED" ? pointConfirmationPanel() : ""}
-      ${singleDeck ? "" : `<section class="controller-card"><h2>NEXT UP</h2>${nextRows}</section>`}
-      <div class="controller-nav"><button data-route="command-home">HOME</button>${state.session?.type === "event" ? `<button data-route="master-schedule">FULL SCHEDULE</button><button data-route="standings">STANDINGS</button>` : ""}</div></div>`, null, "controller-screen");
+    state.controller = normalizeControllerState(state.controller);
+    // An older saved confirmation already contains its score. Only finish its rotation.
+    if (state.controller.phase === "POINT_CONFIRMED") finalizePointDecision(false);
+    const c = state.controller;
+    const match = c.activeMatch;
+    const pending = c.phase === "POINT_STOPPED_WAITING_DECISION";
+    const locked = controllerEditingLocked();
+    const kind = c.pointDraft?.kind;
+    const edited = Object.values(c.pointDraft?.deltas || {}).some(value => value !== 0);
+    const readyPoint = pending && !c.pointDraftError && (kind === "none" || ((kind === "approve" || kind === "reverse") && edited));
+    const correcting = ["READY", "BREAK_PAUSED", "GAME_PAUSED", "MATCH_COMPLETE"].includes(c.phase);
+    const scoreEnabled = !locked && !c.pointDraftError && (correcting || (pending && (kind === "approve" || kind === "reverse")));
+    const visibleScore = side => {
+      try { return previewPointScore(c, side); }
+      catch { return scoreForPhysical(side); }
+    };
+    const next = currentDeckStyle() === "split" ? c.inactiveMatch : null;
+    const field = state.fields.find(item => item.name === state.schedule.find(item => item.id === match.id)?.field) || state.fields[0];
+    const view = {
+      active: {
+        label: "Game " + match.gameNumber,
+        leftName: match.leftPhysicalTeam,
+        rightName: match.rightPhysicalTeam,
+        leftScore: visibleScore("left"),
+        rightScore: visibleScore("right"),
+        pitLeft: field?.pitLeft || "Pit 1",
+        pitRight: field?.pitRight || "Pit 2",
+        gameClock: state.event?.matchTerms?.mode === "RACE_TO" ? "TO " + state.event.matchTerms.raceTo : formatMs(c.gameMs),
+        breakClock: formatMs(c.breakMs),
+        status: controllerStatus(c)
+      },
+      inactive: next ? {
+        label: "Game " + next.gameNumber,
+        leftName: next.leftPhysicalTeam,
+        rightName: next.rightPhysicalTeam,
+        leftScore: scoreForPhysical("left", next),
+        rightScore: scoreForPhysical("right", next),
+        clock: state.event?.matchTerms?.mode === "RACE_TO" ? "TO " + state.event.matchTerms.raceTo : formatMs(next.gameMs)
+      } : null,
+      phase: c.phase,
+      selectedType: kind,
+      baseEnabled: !locked && ["POINT_LIVE", "GAME_PAUSED"].includes(c.phase),
+      pauseEnabled: !locked && ["POINT_LIVE", "GAME_PAUSED", "BREAK_RUNNING", "BREAK_PAUSED"].includes(c.phase),
+      paused: c.phase === "GAME_PAUSED" || c.phase === "BREAK_PAUSED",
+      scoreEnabled,
+      typeEnabled: !locked && pending && !c.pointDraftError,
+      startBreakEnabled: !locked && (c.phase === "READY" || readyPoint),
+      startBreakLabel: c.phase === "BREAK_RUNNING" ? "Break running" : c.phase === "BREAK_PAUSED" ? "Break paused" : "Start break",
+      undoEnabled: !locked && c.undoStack.length > 0,
+      breakEditable: !locked && !(state.event?.coinChallenge && c.phase === "MATCH_COMPLETE"),
+      scoreMinusLeftEnabled: scoreEnabled && visibleScore("left") > 0,
+      scoreMinusRightEnabled: scoreEnabled && visibleScore("right") > 0,
+      settled: locked,
+      eventCode: state.event?.eventCode || null,
+      hasEventTools: state.session?.type === "event" || Boolean(state.event?.matchTerms),
+      completionMarkup: c.phase === "MATCH_COMPLETE" ? controllerCompletionPanel() : ""
+    };
+    page(renderControllerView(view), null, "controller-screen arena-screen");
     startFrame();
-  }
-  function renderOnDeckScorebug(match) {
-    return `<section class="scorebug"><span class="team">${escapeHtml(match.leftPhysicalTeam)}</span><strong class="score">${scoreForPhysical("left", match)}</strong><span class="clock">${formatMs(match.gameMs)}</span><strong class="score">${scoreForPhysical("right", match)}</strong><span class="team">${escapeHtml(match.rightPhysicalTeam)}</span></section>`;
   }
   function scoreForPhysical(side, match = state.controller.activeMatch) {
     const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId;
     return teamId === match.leftTeamId ? match.leftScore : match.rightScore;
   }
-  function controllerMainButton() {
-    const phase = state.controller.phase;
-    if (phase === "MATCH_COMPLETE") {
-      const result = state.event?.coinResult;
-      const controls = !state.event?.coinChallenge ? '<p>PBN career score: pending scoring rules.</p>' : result === "SETTLED" ? '<p>Official result saved · coins settled.</p>' : result === "REVIEW" ? '<p>Official result saved · awaiting review.</p>' : `<button type="button" class="primary wide" data-action="confirm-coin-result" ${coinConfirming ? "disabled" : ""}>${coinConfirming ? "CONFIRMING…" : "CONFIRM FINAL SCORE"}</button>`;
-      return `<section class="decision"><h3>MATCH COMPLETE</h3><p>Final score ${scoreForPhysical("left")} — ${scoreForPhysical("right")}</p>${controls}</section>`;
-     }
-    if (phase === "READY") return `<button class="main-command" data-action="start-break">▶ START BREAK</button>`;
-    if (phase === "BREAK_PAUSED") return `<button class="main-command base" disabled><span>BREAK PAUSED</span><small>PRESS RESUME TO CONTINUE</small></button>`;
-    if (phase === "POINT_LIVE" || phase === "GAME_PAUSED") return `<div class="base-pair"><button class="main-command base" data-action="base" data-side="left"><span>⚑ LEFT BASE</span><small>STOP GAME CLOCK</small></button><button class="main-command base" data-action="base" data-side="right"><span>RIGHT BASE ⚑</span><small>STOP GAME CLOCK</small></button></div>`;
-    if (phase === "BREAK_RUNNING") return `<button class="main-command base" data-action="base" disabled><span>BREAK RUNNING</span><small style="display:block;font-size:8px">GAME STARTS AT 00:00</small></button>`;
-    return "";
+  function controllerCompletionPanel() {
+    const result = state.event?.coinResult;
+    const controls = !state.event?.coinChallenge ? '<p>Final score saved.</p>'
+      : result === "SETTLED" ? '<p>Official result saved · coins settled.</p>'
+      : result === "REVIEW" ? '<p>Official result saved · awaiting review.</p>'
+      : '<button type="button" class="primary wide" data-action="confirm-coin-result"' + (coinConfirming ? " disabled" : "") + '>' + (coinConfirming ? "Confirming…" : "Confirm final score") + '</button>';
+    return '<section class="arena-result"><h3>Match complete</h3><p>Final score ' + scoreForPhysical("left") + ' — ' + scoreForPhysical("right") + '</p>' + controls + '</section>';
   }
-  function decisionPanel() {
-    const { activeMatch: match, pendingBaseSide } = state.controller;
-    const awardButton = (side, pit, team) => {
-      const action = side === pendingBaseSide ? "reverse" : "approve";
-      return `<button class="point-choice" data-action="${action}-point"><span>AWARD POINT · ${pit}</span><strong>${escapeHtml(team)}</strong></button>`;
-    };
-    return `<section class="decision"><h3>${pendingBaseSide === "left" ? "PIT 1 BASE HIT" : "PIT 2 BASE HIT"}</h3><div class="decision-grid">
-      ${awardButton("left", "PIT 1", match.leftPhysicalTeam)}
-      ${awardButton("right", "PIT 2", match.rightPhysicalTeam)}
-    </div><div class="button-row"><button class="no-point" data-action="no-point">NO POINT</button><button class="secondary" data-action="undo">UNDO LAST ACTION</button></div></section>`;
+  function showControllerTools() {
+    const c = state.controller;
+    const terms = state.event?.matchTerms;
+    const betweenPoints = ["READY", "BREAK_RUNNING", "BREAK_PAUSED"].includes(c.phase);
+    const timeouts = terms ? '<section class="controller-card"><h3>Team timeouts</h3><div class="button-row">' + ["left", "right"].map(side => {
+      const id = side === "left" ? c.activeMatch.leftPhysicalTeamId : c.activeMatch.rightPhysicalTeamId;
+      const name = side === "left" ? c.activeMatch.leftPhysicalTeam : c.activeMatch.rightPhysicalTeam;
+      const remaining = Math.max(0, terms.timeoutsPerTeam - (c.timeoutsUsed?.[id] || 0));
+      return '<button type="button" class="secondary" data-action="team-timeout" data-side="' + side + '"' + (!betweenPoints || !remaining || controllerEditingLocked() ? " disabled" : "") + '>' + escapeHtml(name) + ' · ' + remaining + ' left</button>';
+    }).join("") + '</div></section>' : "";
+    const rules = terms ? '<section class="controller-card"><h3>Agreed match rules</h3><p>Revision ' + escapeHtml(state.event.agreementRevision) + '</p><p>' + escapeHtml(terms.equipment) + ' · ' + escapeHtml(terms.fieldType) + ' · ' + terms.breakSeconds + 's breaks</p><p>' + escapeHtml(terms.penaltyRules) + '</p></section>' : "";
+    const upcoming = state.schedule.filter(match => match.id !== c.activeMatch.id).slice(0, 5);
+    const schedule = upcoming.length ? '<section class="controller-card"><h3>Next up</h3>' + upcoming.map(match => '<div class="list-row"><div><strong>' + escapeHtml(match.left) + ' vs ' + escapeHtml(match.right) + '</strong><small>' + escapeHtml(match.time) + ' · ' + escapeHtml(match.field) + '</small></div></div>').join("") + '</section>' : "";
+    modalBody.innerHTML = '<h2>Event tools</h2>' + eventCodeControl() + timeouts + rules + schedule + '<div class="button-row"><button type="button" class="secondary" data-route="master-schedule">Full schedule</button><button type="button" class="secondary" data-route="standings">Standings</button></div>';
+    modal.showModal();
   }
-  function pointConfirmationPanel() { const confirmation = state.controller.pointConfirmation || {}; return `<section class="decision"><h3>${escapeHtml(confirmation.label || "POINT RECORDED")}</h3><p class="muted">Advancing in 3 seconds…</p><button class="secondary wide" style="margin-top:8px;min-height:38px" data-action="undo">UNDO LAST ACTION</button></section>`; }
 
   function renderStandings() { page(`${topbar("Scores & Standings")}<section class="card"><span class="eyebrow">${escapeHtml(state.event.format || "EVENT")} · EVENT ID ${escapeHtml(state.activeEventId || state.event.id)}</span><div class="list">${state.standings.length ? state.standings.map((s,i) => `<div class="list-row"><strong style="width:22px">${i+1}</strong><div><strong>${s.team}</strong><small>${s.w} W · ${s.l} L</small></div><span class="status ${i<2?"good":""}">${s.diff >= 0 ? "+" : ""}${s.diff}</span></div>`).join("") : `<div class="empty">No scores have been recorded for this event.</div>`}</div></section>`, "event-dashboard"); }
   function renderPlayoffs() {
@@ -900,7 +981,15 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     } else if (c.activeAnchor.kind === "game") {
       c.gameMs = remaining; c.activeMatch.gameMs = remaining;
       const el = $("#gameClock"); if (el && state.event?.matchTerms?.mode !== "RACE_TO") el.textContent = formatMs(remaining);
-      if (remaining <= 0 && state.event?.matchTerms?.mode !== "RACE_TO") { c.gameMs = 0; c.phase = "MATCH_COMPLETE"; c.activeAnchor = null; logAction("GAME_CLOCK_EXPIRED"); save(); renderController(); }
+      if (remaining <= 0 && state.event?.matchTerms?.mode !== "RACE_TO") {
+        snapshotController();
+        const next = beginPointDraft(c, 0, { id: crypto.randomUUID(), at: now() });
+        next.undoStack = c.undoStack;
+        next.breakMs = next.nextBreakMs ?? next.breakDefaultMs;
+        state.controller = next;
+        logAction("GAME_CLOCK_EXPIRED", { matchId: next.activeMatch.id, awaitingDecision: true });
+        renderController();
+      }
     }
     if (Date.now() - lastClockPersist >= 1000) { lastClockPersist = Date.now(); save(); }
   }
@@ -973,101 +1062,195 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   function speak(text) { try { speechSynthesis.cancel(); const utterance = new SpeechSynthesisUtterance(text); utterance.rate = .86; utterance.volume = 1; speechSynthesis.speak(utterance); } catch { /* Audio is an enhancement. */ } }
   function snapshotController() {
     const { undoStack, ...current } = state.controller;
-    undoStack.push(clone(current));
-    state.controller.undoStack = undoStack.slice(-20);
+    const snapshot = clone(current);
+    if (snapshot.activeAnchor) {
+      const remaining = anchoredRemaining(snapshot.activeAnchor);
+      if (snapshot.activeAnchor.kind === "break") snapshot.breakMs = remaining;
+      else {
+        snapshot.gameMs = remaining;
+        if (snapshot.activeMatch) snapshot.activeMatch.gameMs = remaining;
+      }
+      snapshot.activeAnchor = { kind: snapshot.activeAnchor.kind, startedAt: Date.now(), startingMs: remaining };
+    }
+    state.controller.undoStack = [...undoStack, snapshot].slice(-20);
   }
   function pauseClock() {
+    if (controllerEditingLocked()) return;
     const c = state.controller;
-    if (c.phase === "BREAK_RUNNING" && c.activeAnchor) { c.breakMs = anchoredRemaining(c.activeAnchor); c.phase = "BREAK_PAUSED"; c.activeAnchor = null; }
-    else if (c.phase === "POINT_LIVE" && c.activeAnchor) { c.gameMs = anchoredRemaining(c.activeAnchor); c.phase = "GAME_PAUSED"; c.activeAnchor = null; }
-    else if (c.phase === "BREAK_PAUSED") { c.phase = "BREAK_RUNNING"; startAnchor("break", c.breakMs); }
-    else if (c.phase === "GAME_PAUSED") { c.phase = "POINT_LIVE"; startAnchor("game", c.gameMs); }
-    else return;
+    if (!["BREAK_RUNNING", "POINT_LIVE", "BREAK_PAUSED", "GAME_PAUSED"].includes(c.phase)) return;
+    snapshotController();
+    if (c.phase === "BREAK_RUNNING") {
+      c.breakMs = c.activeAnchor ? anchoredRemaining(c.activeAnchor) : c.breakMs;
+      c.phase = "BREAK_PAUSED";
+      c.activeAnchor = null;
+    } else if (c.phase === "POINT_LIVE") {
+      c.gameMs = c.activeAnchor ? anchoredRemaining(c.activeAnchor) : c.gameMs;
+      c.activeMatch.gameMs = c.gameMs;
+      c.phase = "GAME_PAUSED";
+      c.activeAnchor = null;
+    } else if (c.phase === "BREAK_PAUSED") {
+      c.phase = "BREAK_RUNNING";
+      startAnchor("break", c.breakMs);
+    } else {
+      c.phase = "POINT_LIVE";
+      startAnchor("game", c.gameMs);
+    }
     const paused = c.phase.endsWith("PAUSED");
     logAction(paused ? "CLOCK_PAUSED" : "CLOCK_RESUMED", { phase: c.phase });
     if (paused) speak("Game stopped");
     renderController();
   }
-  function base(side = "left") {
-    const c = state.controller; if (c.phase !== "POINT_LIVE") return;
-    c.gameMs = c.activeAnchor ? anchoredRemaining(c.activeAnchor) : c.gameMs; c.activeMatch.gameMs = c.gameMs; c.activeAnchor = null; c.phase = "POINT_STOPPED_WAITING_DECISION"; c.pendingBaseSide = side; logAction(side === "left" ? "BUZZER_LEFT" : "BUZZER_RIGHT", { side, gameMs: c.gameMs }); speak("Base"); renderController();
-  }
-  function decide(kind) {
-    const c = state.controller; if (c.phase !== "POINT_STOPPED_WAITING_DECISION") return;
-    if (state.session?.deckStyle === "split" && !c.inactiveMatch) return toast("No second match is assigned to this event.");
+  function base() {
+    if (controllerEditingLocked()) return;
+    const c = state.controller;
+    if (!["POINT_LIVE", "GAME_PAUSED"].includes(c.phase)) return;
+    const remaining = c.activeAnchor ? anchoredRemaining(c.activeAnchor) : c.gameMs;
+    const next = beginPointDraft(c, remaining, { id: crypto.randomUUID(), at: now() });
+    next.breakMs = next.nextBreakMs ?? next.breakDefaultMs;
     snapshotController();
-    const side = c.pendingBaseSide;
-    const scoringSide = side === "left" ? "right" : "left";
-    const scoringPhysicalSide = kind === "approve" ? scoringSide : kind === "reverse" ? side : null;
-    const match = c.activeMatch;
-    const scoringTeamId = scoringPhysicalSide === "left" ? match.leftPhysicalTeamId : scoringPhysicalSide === "right" ? match.rightPhysicalTeamId : null;
-    const scoringTeam = scoringPhysicalSide === "left" ? match.leftPhysicalTeam : scoringPhysicalSide === "right" ? match.rightPhysicalTeam : null;
-    if (scoringTeamId === match.leftTeamId) match.leftScore += 1;
-    else if (scoringTeamId === match.rightTeamId) match.rightScore += 1;
-    if (kind === "reverse") speak("Point reversed");
-    c.pointHistory.push({ at: now(), decision: kind, baseSide: side, scoringTeamId, scoringTeam, gameMs: c.gameMs });
-    c.activeMatch.gameMs = c.gameMs;
-    c.pendingBaseSide = null;
-    c.phase = "POINT_CONFIRMED";
-    c.pointConfirmation = {
-      kind,
-      scoringTeamId,
-      scoringTeam,
-      baseSide: side,
-      scoringPhysicalSide,
-      label: scoringPhysicalSide ? `POINT AWARDED · ${scoringTeam}` : "NO POINT"
-    };
-    logAction(kind === "approve" ? "POINT_APPROVED" : kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", { scoringTeamId, scoringTeam, baseSide: side });
+    next.undoStack = c.undoStack;
+    state.controller = next;
+    logAction("BASE", { pointId: next.pointDraft.id, matchId: next.activeMatch.id, gameMs: remaining });
+    speak("Base");
     renderController();
-    clearTimeout(pointConfirmationTimer);
-    pointConfirmationTimer = setTimeout(finalizePointDecision, 2600);
   }
-  function finalizePointDecision() {
+  function choosePointType(kind) {
+    if (controllerEditingLocked()) return;
+    try {
+      const next = selectPointType(state.controller, kind);
+      if (kind === state.controller.pointDraft?.kind) return;
+      snapshotController();
+      next.undoStack = state.controller.undoStack;
+      state.controller = next;
+      logAction("POINT_TYPE_SELECTED", { pointId: next.pointDraft.id, kind });
+      renderController();
+    } catch (error) { toast(error.message); }
+  }
+  function adjustScore(side, delta) {
+    if (controllerEditingLocked() || !["left", "right"].includes(side)) return;
+    const c = state.controller;
+    const match = c.activeMatch;
+    if (!match) return;
+    const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId;
+    if (c.phase === "POINT_STOPPED_WAITING_DECISION") {
+      try {
+        const next = adjustPointScore(c, side, delta);
+        if (previewPointScore(next, side) === previewPointScore(c, side)) return;
+        snapshotController();
+        next.undoStack = c.undoStack;
+        state.controller = next;
+        logAction("POINT_SCORE_ADJUSTED", { pointId: next.pointDraft.id, teamId, side, delta });
+      } catch (error) { return toast(error.message); }
+    } else {
+      if (!["READY", "BREAK_PAUSED", "GAME_PAUSED", "MATCH_COMPLETE"].includes(c.phase)) return;
+      const key = teamId === match.leftTeamId ? "leftScore" : "rightScore";
+      const value = Math.max(0, Math.min(1000, match[key] + delta));
+      if (value === match[key]) return;
+      snapshotController();
+      match[key] = value;
+      logAction("MANUAL_SCORE_CORRECTION", { matchId: match.id, teamId, side, delta });
+    }
+    renderController();
+  }
+  function startBreak() {
+    if (controllerEditingLocked()) return;
+    const c = state.controller;
+    if (c.phase === "POINT_STOPPED_WAITING_DECISION") {
+      if (currentDeckStyle() === "split" && !c.inactiveMatch) return toast("No second match is assigned to this event.");
+      try {
+        const result = commitPointDraft(c, { at: now() });
+        snapshotController();
+        result.controller.undoStack = c.undoStack;
+        state.controller = result.controller;
+        logAction(result.decision.kind === "approve" ? "POINT_APPROVED" : result.decision.kind === "reverse" ? "POINT_REVERSED" : "NO_POINT", result.decision);
+        finalizePointDecision(false);
+        ensureAudio();
+        void unlockCueAudio();
+        // Exactly one outcome voice, after the complete result has been saved.
+        speak(result.voice);
+        renderController();
+      } catch (error) { toast(error.message); }
+      return;
+    }
+    if (c.phase !== "READY") return;
+    snapshotController();
+    const ms = c.breakMs || c.breakDefaultMs;
+    c.breakMs = ms;
+    c.phase = "BREAK_RUNNING";
+    c.lastAnnouncement = null;
+    startAnchor("break", ms);
+    logAction("BREAK_STARTED", { ms });
+    ensureAudio();
+    void unlockCueAudio();
+    speak(spokenDuration(ms));
+    renderController();
+  }
+  function controllerMatchComplete(match) {
+    if (match.complete) return true;
+    const terms = state.event?.matchTerms;
+    if (terms?.mode === "RACE_TO") {
+      return Math.max(match.leftScore, match.rightScore) >= terms.raceTo && match.leftScore !== match.rightScore;
+    }
+    return match.gameMs <= 0 || raceToComplete(match, state.session.format, state.session.pointLimit, "single");
+  }
+  function finalizePointDecision(shouldRender = true) {
     const c = state.controller;
     if (c.phase !== "POINT_CONFIRMED") return;
-    const pointAwarded = c.pointConfirmation?.kind === "approve" || c.pointConfirmation?.kind === "reverse";
-    const splitDeck = state.session?.deckStyle === "split";
-    const advance = () => {
-      if (c.phase !== "POINT_CONFIRMED") return;
-      if (pointAwarded) {
-        [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
-        [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
-      }
-      c.pointConfirmation = null;
-      c.sideSwapFading = false;
-      if (pointAwarded && raceToComplete(c.activeMatch, state.session.format, state.session.pointLimit, state.session.deckStyle)) {
-        c.phase = "MATCH_COMPLETE"; c.activeAnchor = null;
-        logAction("RACE_TO_COMPLETE", { matchId: c.activeMatch.id }); renderController(); return;
-      }
-      if (splitDeck) {
-        const completedMatch = c.activeMatch;
-        c.activeMatch = c.inactiveMatch;
-        c.inactiveMatch = completedMatch;
-        c.gameMs = c.activeMatch.gameMs;
-        logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id });
-      }
-      c.breakMs = c.breakDefaultMs;
-      c.phase = "BREAK_RUNNING";
-      c.lastAnnouncement = null;
-      startAnchor("break", c.breakMs);
+    const confirmation = c.pointConfirmation;
+    if (confirmation?.matchId && confirmation.matchId !== c.activeMatch.id) {
+      c.phase = "GAME_PAUSED";
+      c.activeAnchor = null;
+      c.pointDraftError = "This saved result belongs to another match. Use Undo to recover it.";
       save();
-      renderController();
-    };
-    if (!pointAwarded && !splitDeck) return advance();
-    c.sideSwapFading = true;
-    renderController();
-    clearTimeout(sideSwapTimer);
-    sideSwapTimer = setTimeout(advance, 300);
+      if (shouldRender) renderController();
+      return;
+    }
+    const pointAwarded = confirmation?.kind === "approve" || confirmation?.kind === "reverse";
+    c.activeMatch.gameMs = c.gameMs;
+    if (pointAwarded) {
+      [c.activeMatch.leftPhysicalTeamId, c.activeMatch.rightPhysicalTeamId] = [c.activeMatch.rightPhysicalTeamId, c.activeMatch.leftPhysicalTeamId];
+      [c.activeMatch.leftPhysicalTeam, c.activeMatch.rightPhysicalTeam] = [c.activeMatch.rightPhysicalTeam, c.activeMatch.leftPhysicalTeam];
+    }
+    c.activeMatch.complete = controllerMatchComplete(c.activeMatch);
+    c.pointConfirmation = null;
+    c.pointDraft = null;
+    c.pendingBaseSide = null;
+    c.sideSwapFading = false;
+    const shouldRotate = currentDeckStyle() === "split" && c.inactiveMatch && !c.inactiveMatch.complete;
+    if (shouldRotate) {
+      [c.activeMatch, c.inactiveMatch] = [c.inactiveMatch, c.activeMatch];
+      c.gameMs = c.activeMatch.gameMs;
+    }
+    if (c.activeMatch.complete) {
+      c.phase = "MATCH_COMPLETE";
+      c.activeAnchor = null;
+      logAction("MATCH_COMPLETED", { matchId: c.activeMatch.id });
+    } else {
+      c.breakMs = c.nextBreakMs ?? c.breakDefaultMs;
+      delete c.nextBreakMs;
+      c.phase = "BREAK_RUNNING";
+      const seconds = Math.ceil(c.breakMs / 1000);
+      // Do not let an immediate 30/20/10 call cancel the point announcement.
+      c.lastAnnouncement = [30, 20, 10].includes(seconds) ? seconds : null;
+      startAnchor("break", c.breakMs);
+      if (shouldRotate) logAction("ACTIVE_INACTIVE_SWAPPED", { activeMatchId: c.activeMatch.id });
+      logAction("BREAK_STARTED", { ms: c.breakMs, pointId: confirmation?.pointId });
+    }
+    save();
+    if (shouldRender) renderController();
   }
   function undo() {
-    clearTimeout(pointConfirmationTimer);
-    clearTimeout(sideSwapTimer);
-    pointConfirmationTimer = null;
-    sideSwapTimer = null;
+    if (controllerEditingLocked()) return;
     const undoStack = state.controller.undoStack;
     const snapshot = undoStack.pop();
     if (!snapshot) return toast("Nothing to undo.");
-    state.controller = { ...clone(snapshot), undoStack };
+    state.controller = normalizeControllerState({ ...clone(snapshot), undoStack });
+    const c = state.controller;
+    if (c.activeAnchor) {
+      const ms = c.activeAnchor.kind === "break" ? c.breakMs : c.gameMs;
+      c.activeAnchor = { kind: c.activeAnchor.kind, startedAt: Date.now(), startingMs: ms };
+    }
+    try { speechSynthesis.cancel(); } catch { /* Silent recovery is still available. */ }
     logAction("UNDO");
     renderController();
   }
@@ -1086,15 +1269,17 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   }
   function setBreakClock(ms) {
     const c = state.controller;
+    if (controllerEditingLocked() || !Number.isFinite(ms) || ms < 5000 || ms > 1500000) return;
+    if (clockPickerMode === "default" && state.event?.matchTerms) return toast("The default break is fixed by the Coaches' agreement.");
+    snapshotController();
     const wasRunning = c.phase === "BREAK_RUNNING";
     const wasPaused = c.phase === "BREAK_PAUSED";
     c.breakMs = ms;
     c.lastAnnouncement = null;
-    if (clockPickerMode === "default" && state.event?.matchTerms) return toast("The default break is fixed by the Coaches' agreement.");
     if (clockPickerMode === "default") c.breakDefaultMs = ms;
     if (wasRunning) { c.phase = "BREAK_RUNNING"; startAnchor("break", ms); }
     else if (wasPaused) { c.phase = "BREAK_PAUSED"; c.activeAnchor = null; }
-    else { c.phase = "READY"; c.activeAnchor = null; }
+    else if (["POINT_LIVE", "GAME_PAUSED", "POINT_STOPPED_WAITING_DECISION"].includes(c.phase)) c.nextBreakMs = ms;
     logAction(clockPickerMode === "default" ? "BREAK_DEFAULT_CHANGED" : "BREAK_CLOCK_JUMPED", { ms, running: wasRunning, paused: wasPaused });
     ensureAudio();
     speak(spokenDuration(ms));
@@ -1302,7 +1487,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     state.staff = clone(stored?.staff || (Array.isArray(selected.staff) ? selected.staff : []));
     state.schedule = clone(schedule);
     state.standings = clone(stored?.standings || (Array.isArray(selected.standings) ? selected.standings : []));
-    state.controller = clone(stored?.controller?.eventId === eventId ? stored.controller : emptyControllerForEvent(eventId));
+    state.controller = normalizeControllerState(clone(stored?.controller?.eventId === eventId ? stored.controller : emptyControllerForEvent(eventId)));
     state.scheduleDraft = clone(stored?.scheduleDraft || { ...defaultState.scheduleDraft, eventId, days: selected.endDate && selected.endDate !== selected.startDate ? 2 : 1, fields: 0, generated: false, published: false });
     const session = stored?.session?.eventId === eventId ? stored.session : { active: false, type: null, eventId, deckStyle: eventRecord.deckStyle || null };
     state.session = { ...session, label: eventRecord.name, format: eventRecord.format, pointLimit: eventRecord.pointLimit || null };
@@ -1311,7 +1496,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
   }
 
   document.addEventListener("click", (event) => {
-    const button = event.target.closest("button"); if (!button) return;
+    const button = event.target.closest("button"); if (!button || button.disabled) return;
     if (button.dataset.route) return route(button.dataset.route);
     if (button.dataset.clockSeconds) {
       setBreakClock(Number(button.dataset.clockSeconds) * 1000); return;
@@ -1343,13 +1528,26 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
       renderScheduleBuilder();
     }
     else if (action === "publish-schedule") { state.scheduleDraft.published = true; state.event.status = "Published"; logAction("SCHEDULE_PUBLISHED", { version: state.scheduleDraft.version }); renderMasterSchedule(); }
-    else if (action === "start-break") { const ms = state.controller.breakMs || state.controller.breakDefaultMs; ensureAudio(); unlockCueAudio().finally(() => speak(spokenDuration(ms))); state.controller.phase = "BREAK_RUNNING"; state.controller.lastAnnouncement = null; startAnchor("break", ms); logAction("BREAK_STARTED", { ms }); renderController(); }
-    else if (action === "team-timeout") {try{const c=state.controller,remaining=c.activeAnchor?.kind==='break'?anchoredRemaining(c.activeAnchor):c.breakMs;const next=useTeamTimeout(c,state.event.matchTerms,button.dataset.side,remaining);snapshotController();next.undoStack=state.controller.undoStack;state.controller=next;if(next.phase==='BREAK_RUNNING')startAnchor('break',next.breakMs);logAction('TEAM_TIMEOUT',{side:button.dataset.side});renderController();}catch(error){toast(error.message);}}
+    else if (action === "start-break") startBreak();
+    else if (action === "team-timeout") {
+      if (controllerEditingLocked()) return;
+      try {
+        const c = state.controller;
+        const remaining = c.activeAnchor?.kind === "break" ? anchoredRemaining(c.activeAnchor) : c.breakMs;
+        const next = useTeamTimeout(c, state.event.matchTerms, button.dataset.side, remaining);
+        snapshotController();
+        next.undoStack = state.controller.undoStack;
+        state.controller = next;
+        if (next.phase === "BREAK_RUNNING") startAnchor("break", next.breakMs);
+        logAction("TEAM_TIMEOUT", { side: button.dataset.side });
+        modal.close();
+        renderController();
+      } catch (error) { toast(error.message); }
+    }
     else if (action === "pause") pauseClock();
-    else if (action === "base") base(button.dataset.side || "left");
-    else if (action === "approve-point") decide("approve");
-    else if (action === "reverse-point") decide("reverse");
-    else if (action === "no-point") decide("no_point");
+    else if (action === "base") base();
+    else if (action === "point-type") choosePointType(button.dataset.kind);
+    else if (action === "event-tools") showControllerTools();
     else if (action === "confirm-coin-result") {
       const id = state.activeEventId;
       if (!state.event?.coinChallenge || state.event.coinResult || coinConfirming || state.controller.phase !== "MATCH_COMPLETE") return;
@@ -1362,7 +1560,7 @@ import { controllerDeckStyle,raceToComplete,applyMatchTerms,useTeamTimeout } fro
     else if (action === "undo" && !state.event?.coinResult && !coinConfirming) undo();
     else if (action === "set-break" && !state.event?.coinResult && !coinConfirming && !(state.event?.coinChallenge && state.controller.phase === "MATCH_COMPLETE")) showClockPicker();
     else if (action === "set-default-mode") { clockPickerMode = "default"; renderClockPicker(); }
-    else if ((action === "score-plus" || action === "score-minus") && !state.event?.coinResult && !coinConfirming) { snapshotController(); const side = button.dataset.side; const match = state.controller.activeMatch; const teamId = side === "left" ? match.leftPhysicalTeamId : match.rightPhysicalTeamId; const key = teamId === match.leftTeamId ? "leftScore" : "rightScore"; match[key] = Math.max(0, match[key] + (action === "score-plus" ? 1 : -1)); logAction("MANUAL_SCORE_CORRECTION", { side, teamId, delta: action === "score-plus" ? 1 : -1 }); renderController(); }
+    else if (action === "score-plus" || action === "score-minus") adjustScore(button.dataset.side, action === "score-plus" ? 1 : -1);
     else if (action === "export-log") exportLog();
     else if (action === "reset-all") { const auth = { authenticated: state.authenticated, authMode: state.authMode, member: state.member, operator: state.operator, route: state.authenticated ? "command-home" : "login" }; localStorage.removeItem(STORAGE_KEY); localStorage.removeItem(EVENT_LOG_KEY); state = { ...clone(defaultState), ...auth }; save(); render(); }
     else if (action === "finalize-playoffs") toast("Qualifying is still active. Projection was not finalized.");
