@@ -19,7 +19,9 @@ test('a tournament saves once after a lost reply and leaves the current practice
     if (created && request.path.endsWith('/controller-setups')) return response({ items: [created] });
   }); t.after(harness.close);
   const state = harness.local(), id = state.activeEventId;
-  await harness.api.officialSetup.show('TOURNAMENT'); values(harness.window);
+  await harness.api.officialSetup.show('TOURNAMENT');
+  assert.equal(harness.window.document.querySelector('.modal-card .close').formNoValidate, true, 'closing an incomplete setup must not be blocked by required fields');
+  values(harness.window);
   fill(harness.window, '#setup-name', 'Real Cup'); fill(harness.window, '#setup-endDate', '2030-06-05'); fill(harness.window, '#setup-teams', 'Alpha\nBravo');
   click(harness.window, '[data-setup-action="save"]'); await settle();
   assert.match(harness.window.document.querySelector('#modalBody').textContent, /RETRY SAVE/);
@@ -70,5 +72,5 @@ test('a late setup reply never crosses an account change', async t => {
   }); t.after(harness.close);
   await harness.api.officialSetup.show('SCRIMMAGE'); values(harness.window); click(harness.window, '[data-setup-action="save"]'); await settle(); assert.ok(started);
   harness.api.selectMemberWorkspace({ id: 'other-account' }); pending.resolve(response(result('SCRIMMAGE', 'old-id'), 201)); await settle();
-  assert.equal(harness.api.state.ownerUserId, 'other-account'); assert.equal(harness.api.state.officialSetupPending, null); assert.equal(harness.api.state.remoteSetups.length, 0); assert.equal(harness.window.document.body.textContent.includes('SAVED IN GAMETIME'), false);
+  assert.equal(harness.window.document.querySelector('#modal').open, false); assert.equal(harness.api.state.ownerUserId, 'other-account'); assert.equal(harness.api.state.officialSetupPending, null); assert.equal(harness.api.state.remoteSetups.length, 0); assert.equal(harness.window.document.body.textContent.includes('SAVED IN GAMETIME'), false);
 });
