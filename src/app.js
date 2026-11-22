@@ -365,6 +365,8 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
   function selectMemberWorkspace(user) {
     const previousOwner = state.ownerUserId || state.member?.id;
     if (previousOwner !== user.id) {
+      if (modal.open) modal.close();
+      modalBody.innerHTML = "";
       if (previousOwner) save();
       state = loadState(STORAGE_KEY + ":" + user.id);
       if ((state.ownerUserId || state.member?.id) !== user.id) {
