@@ -31,5 +31,5 @@ test('agreed timing applies once and timeout allowance follows the team after en
 test('remote event workspace sends its agreed revision and initializes the agreed rules',async()=>{
  const app=await readFile(new URL('../src/app.js',import.meta.url),'utf8');
  assert.match(app,/agreementRevision: state\.event\?\.agreementRevision/);
- assert.match(app,/state\.controller = applyMatchTerms\(c,state\.event\.matchTerms\)/);
+ assert.match(app,/state\.controller = applyMatchTerms\(c,\s*state\.event\.matchTerms\)/);
 });

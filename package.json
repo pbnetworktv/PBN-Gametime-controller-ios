@@ -14,12 +14,14 @@
     "@aparajita/capacitor-secure-storage": "^8.0.0",
     "@capacitor/app": "8.1.2",
     "@capacitor/core": "^8.5.0",
+    "@capacitor/geolocation": "8.2.5",
     "@capacitor/ios": "^8.5.0",
     "@pbnetwork/controller-audio": "file:native/controller-audio"
   },
   "devDependencies": {
     "@capacitor/cli": "^8.5.0",
-    "esbuild": "^0.25.10"
+    "esbuild": "^0.25.10",
+    "jsdom": "26.1.0"
   },
   "engines": {
     "node": ">=22"

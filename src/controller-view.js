@@ -68,7 +68,7 @@ export function renderControllerView(view) {
 
   return `<div class="arena-controller${view.inactive ? " arena-split" : " arena-single"}${view.completionMarkup ? " arena-complete" : ""}" data-controller-phase="${escape(view.phase)}">
     <div class="arena-atmosphere" aria-hidden="true"><i class="arena-bunker arena-bunker-one"></i><i class="arena-bunker arena-bunker-two"></i><i class="arena-bunker arena-bunker-three"></i><i class="arena-bunker arena-bunker-four"></i></div>
-    <header class="arena-header"><span class="arena-brand" aria-label="PBN">PBN</span><h1>Game Time Controller</h1>${headerAction}</header>
+    <header class="arena-header"><span class="arena-brand" aria-label="PBN">PBN</span><div class="arena-heading"><h1>Game Time Controller</h1>${view.syncMarkup || ""}</div>${headerAction}</header>
     ${inactiveMarkup(view.inactive)}
     <section class="arena-active" aria-label="${escape(active.label || "Game 1")}, active">
       <div class="arena-active-heading"><h2>${escape(active.label || "Game 1")}</h2><span>${view.settled ? "Final" : "Active"}</span></div>

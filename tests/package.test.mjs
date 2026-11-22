@@ -4,6 +4,7 @@ import test from "node:test";
 import { renderControllerView, isFinalBreakCountdown } from "../src/controller-view.js";
 
 const app = await readFile(new URL("../src/app.js", import.meta.url), "utf8");
+const home = await readFile(new URL("../src/companion-home.js", import.meta.url), "utf8");
 const index = await readFile(new URL("../src/index.html", import.meta.url), "utf8");
 const styles = await readFile(new URL("../src/styles.css", import.meta.url), "utf8");
 
@@ -70,7 +71,7 @@ test("reference and alternate countdown sounds are bundled into settings", () =>
   assert.match(app, /scoreboard-beep/);
   assert.match(app, /referee-timer-beep/);
   assert.match(app, /tournament-beep/);
-  assert.match(app, /id="countdownCue"/);
+  assert.match(app, /selectField\("countdownCue"/);
 });
 
 test("pause control exposes resume state and viewport zoom is disabled", () => {
@@ -89,8 +90,8 @@ test("application exposes all first-iteration routes", () => {
 });
 
 test("home is scrimmage-first and full events use a guided readiness path", () => {
-  assert.match(app, /START A SCRIMMAGE/);
-  assert.match(app, /START NEW EVENT/);
+  assert.match(home, /START A SCRIMMAGE/);
+  assert.match(home, /START NEW EVENT/);
   assert.match(app, /CONTINUE WHERE I LEFT OFF/);
   assert.match(app, /function eventSetupSteps/);
   assert.match(app, /function startScrimmage/);
@@ -136,9 +137,9 @@ test("legacy and offline demo state cannot bypass account entry on launch", () =
 
 test("signed-in members can open their shared PBN events", () => {
   assert.match(app, /\/api\/game-time\/player\/controller-events/);
-  assert.match(app, /My PBN events/);
+  assert.match(home, /My PBN events/);
   assert.match(app, /data-action="open-remote-event"/);
-  assert.match(app, /REMOTE_EVENT_OPENED/);
+  assert.match(app, /await restoreControllerWorkspace\(selected.id\)/);
   assert.match(app, /remoteEventDateLabel/);
   assert.match(app, /function refreshRemoteEvents/);
   assert.match(app, /visibilitychange/);
