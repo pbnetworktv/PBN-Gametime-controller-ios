@@ -12,6 +12,7 @@ import { Geolocation } from "@capacitor/geolocation";
 import { createPbnRequest } from "./companion-api.js";
 import { controllerEventFromLink } from "./controller-handoff.js";
 import { staffJoinView, organizerStaffView } from "./companion-view.js";
+import { createOfficialSetup } from "./official-setup.js";
 import { companionHomeView } from "./companion-home.js";
 import { completedMatches, nextEventMatch, eventStandings } from "./event-progress.js";
 
@@ -42,6 +43,8 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     authMode: null,
     member: null,
     remoteEvents: [],
+    remoteSetups: [],
+    officialSetupPending: null,
     activeEventId: "event-demo",
     eventWorkspaces: {},
     pendingCreations: {},
@@ -464,14 +467,42 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     render();
     void resumeEventHandoff();
   }
+  const officialSetup = createOfficialSetup({
+    modal, body: modalBody, origin: authApiOrigin,
+    stamp: () => `${state.ownerUserId}:${accountGeneration}`,
+    getPending: () => state.officialSetupPending,
+    setPending: (value) => { state.officialSetupPending = value; save(); },
+    request: async (path, options = {}) => {
+      const generation = accountGeneration, owner = state.ownerUserId;
+      const session = await readSecureSession();
+      if (generation !== accountGeneration || owner !== state.ownerUserId || !hasMemberSession(session)) throw Error("Sign in to your PBN account to set up an event.");
+      const result = await authRequest("/api/game-time/player/" + path, options, session.token);
+      if (generation !== accountGeneration || owner !== state.ownerUserId) throw Error("The signed-in account changed.");
+      return result;
+    },
+    saved: async () => { await refreshRemoteEvents(); },
+    openController: async (id) => {
+      await refreshRemoteEvents();
+      const event = state.remoteEvents.find(item => item.id === id);
+      if (event) await activateRemoteEvent(event);
+      else toast("Your setup is saved. Refresh My PBN events to open it.");
+    }
+  });
   async function loadRemoteEvents(token) {
     const generation = accountGeneration;
     remoteEventsLoading = true;
     remoteEventsError = "";
     try {
-      const events = await authRequest("/api/game-time/player/controller-events", { method: "GET" }, token);
+      const [ready, setups] = await Promise.allSettled([
+        authRequest("/api/game-time/player/controller-events", { method: "GET" }, token),
+        authRequest("/api/game-time/player/controller-setups", { method: "GET" }, token)
+      ]);
+      if (ready.status === "rejected") throw ready.reason;
+      const events = ready.value;
       if (generation !== accountGeneration) return false;
       state.remoteEvents = Array.isArray(events) ? events : [];
+      if (setups.status === "fulfilled") state.remoteSetups = setups.value?.items || [];
+      else remoteEventsError = "Ready matches loaded. Retry to update pending GameTime setups.";
       const active = state.remoteEvents.find((event) => event.id === state.activeEventId);
       if (active?.eventCode && state.event?.source === "PBN") state.event.eventCode = active.eventCode;
       save();
@@ -1866,8 +1897,9 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     toast(value ? "Custom connection saved." : "Default PBN connection saved.");
     render();
   }
-  function showScrimmageSetup() {
-    modalBody.innerHTML = `<h2>Start a Scrimmage</h2><p class="muted">Choose your teams and format. Select a GameTime field to share this scrimmage with your crew.</p><div class="field"><label for="scrimmageVenue">Venue</label><select id="scrimmageVenue"><option value="">Practice on this device</option></select></div><div class="field-grid"><div class="field"><label>Deck style</label><select id="scrimmageDeck"><option value="single">Single Deck (2 teams)</option><option value="split">Split Deck (4 teams)</option></select></div><div class="field"><label>Scoring format</label><select id="scrimmageFormat"><option value="race-to">Race-to</option><option value="uncapped">Uncapped points</option></select></div><div class="field"><label>Point limit</label><select id="scrimmagePointLimit">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<option value="${n}" ${n === 3 ? "selected" : ""}>${n} points</option>`).join("")}</select></div><div class="field"><label>Left team</label><input id="scrimmageLeft" value="TEAM 1" maxlength="24"></div><div class="field"><label>Right team</label><input id="scrimmageRight" value="TEAM 2" maxlength="24"></div><div id="splitDeckTeams" class="field-grid hidden"><div class="field"><label>Second match — left team</label><input id="scrimmageNextLeft" value="TEAM 3" maxlength="24"></div><div class="field"><label>Second match — right team</label><input id="scrimmageNextRight" value="TEAM 4" maxlength="24"></div></div></div><button class="primary wide" style="margin-top:16px" type="button" data-action="start-scrimmage">OPEN CONTROLLER</button>`;
+  function showScrimmageSetup(practiceOnly = false) {
+    modalBody.dataset.practiceOnly = String(practiceOnly);
+    modalBody.innerHTML = `<h2>${practiceOnly ? "Practice clock" : "Start a Scrimmage"}</h2><p class="muted">${practiceOnly ? "Run a practice on this device. Create a GameTime scrimmage request from the home screen to arrange play with another PBN team." : "Choose your teams and format. Select a GameTime field to share this scrimmage with your crew."}</p><div class="field"><label for="scrimmageVenue">Venue</label><select id="scrimmageVenue"><option value="">Practice on this device</option></select></div><div class="field-grid"><div class="field"><label>Deck style</label><select id="scrimmageDeck"><option value="single">Single Deck (2 teams)</option><option value="split">Split Deck (4 teams)</option></select></div><div class="field"><label>Scoring format</label><select id="scrimmageFormat"><option value="race-to">Race-to</option><option value="uncapped">Uncapped points</option></select></div><div class="field"><label>Point limit</label><select id="scrimmagePointLimit">${[1, 2, 3, 4, 5, 6, 7].map((n) => `<option value="${n}" ${n === 3 ? "selected" : ""}>${n} points</option>`).join("")}</select></div><div class="field"><label>Left team</label><input id="scrimmageLeft" value="TEAM 1" maxlength="24"></div><div class="field"><label>Right team</label><input id="scrimmageRight" value="TEAM 2" maxlength="24"></div><div id="splitDeckTeams" class="field-grid hidden"><div class="field"><label>Second match — left team</label><input id="scrimmageNextLeft" value="TEAM 3" maxlength="24"></div><div class="field"><label>Second match — right team</label><input id="scrimmageNextRight" value="TEAM 4" maxlength="24"></div></div></div><button class="primary wide" style="margin-top:16px" type="button" data-action="start-scrimmage">OPEN CONTROLLER</button>`;
     modal.showModal();
     refreshScrimmageVenues();
     void loadVenueDirectory();
@@ -2050,7 +2082,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     logAction("SCRIMMAGE_STARTED", { left, right, format, pointLimit, deckStyle });
     modal.close();
     route("live-controller");
-    if (venue && state.authMode === "member") void publishCurrentEvent();
+    if (venue && state.authMode === "member" && modalBody.dataset.practiceOnly !== "true") void publishCurrentEvent();
   }
   function runEvent() {
     const eventId = state.activeEventId || state.event?.id;
@@ -2362,9 +2394,11 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     else if (action === "sign-out") signOut();
     else if (action === "delete-account") confirmAccountDeletion();
     else if (action === "confirm-delete-account") deleteAccount();
-    else if (action === "open-scrimmage") showScrimmageSetup();
+    else if (action === "open-scrimmage") state.authMode === "member" ? void officialSetup.show("SCRIMMAGE") : showScrimmageSetup(true);
+    else if (action === "open-practice") showScrimmageSetup(true);
+    else if (action === "open-challenge") void officialSetup.show("CHALLENGE");
     else if (action === "start-scrimmage") startScrimmage();
-    else if (action === "open-new-event") showNewEventSetup();
+    else if (action === "open-new-event") state.authMode === "member" ? void officialSetup.show("TOURNAMENT") : showNewEventSetup();
     else if (action === "create-local-event") createLocalEvent();
     else if (action === "resume-saved-session") resumeSavedSession(button.dataset.eventId);
     else if (action === "run-event") runEvent();

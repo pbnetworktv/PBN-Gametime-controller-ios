@@ -89,9 +89,9 @@ test("application exposes all first-iteration routes", () => {
   for (const route of routes) assert.match(app, new RegExp(`"${route}"`));
 });
 
-test("home is scrimmage-first and full events use a guided readiness path", () => {
-  assert.match(home, /START A SCRIMMAGE/);
-  assert.match(home, /START NEW EVENT/);
+test("home exposes distinct GameTime setup and a guided event readiness path", () => {
+  assert.match(home, /CREATE SCRIMMAGE/);
+  assert.match(home, /CREATE TOURNAMENT/);
   assert.match(app, /CONTINUE WHERE I LEFT OFF/);
   assert.match(app, /function eventSetupSteps/);
   assert.match(app, /function startScrimmage/);

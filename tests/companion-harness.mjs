@@ -8,7 +8,7 @@ const html = await readFile(new URL("src/index.html", root), "utf8");
 const hooks = `window.__controller = {
   get state() { return state; }, save, publishCurrentEvent, flushControllerSync,
   restoreControllerWorkspace, activateRemoteEvent, selectMemberWorkspace, logAction,
-  claimStaffRole, route, emptyControllerForEvent, scrimmageMatch,
+  officialSetup, refreshRemoteEvents, claimStaffRole, route, emptyControllerForEvent, scrimmageMatch,
   setStaff(view, day) { staffPreview = view; staffCode = view.code; staffDay = day; },
   get staffError() { return staffError; },
   async ready() { await restoreAuthSession(); }
@@ -55,6 +55,7 @@ export async function controllerHarness(handler = () => undefined) {
       const answer = await handler(request);
       if (answer) return answer;
       if (request.path === "/api/mobile-auth/me") return response({ user: window.__qa.session.user });
+      if (request.path.endsWith("/controller-setups")) return response({items:[]});
       if (request.path.endsWith("/controller-events")) return response([]);
       if (request.path.endsWith("/staff/mine")) return response({ active: null });
       throw Error("Unexpected native request: " + request.path);
