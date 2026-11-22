@@ -11,6 +11,20 @@ This repository is the iOS TestFlight source for PBN Game Time Controller.
 - Supported device family for this first build: iPhone
 - Supported orientation: Portrait
 
+## GameTime companion
+
+The Controller uses the member's PBN account, shared event code, opening teams,
+schedule and score. GameTime event links open the matching Controller event.
+New events can continue on the device when a connection fails; Retry Save keeps
+the original creation request and carries the latest local score into GameTime.
+Competing shared scores require an explicit operator choice.
+
+Join Event Staff uses a fresh precise location when a member claims a role.
+Staff slots and work time come from the shared event service. Rewards use the
+existing Paintballs ledger; this client never calculates or credits payouts.
+The iOS configuration script supplies both location purpose descriptions
+required by the Geolocation plugin. Location is not tracked in the background.
+
 ## Local verification
 
 ```sh
