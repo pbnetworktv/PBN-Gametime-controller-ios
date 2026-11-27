@@ -3,7 +3,7 @@ function controllerEventFromLink(input, hostedOrigin) {
   try {
     const url = new URL(input);
     const native = url.protocol === "pbngametimecontroller:" && url.hostname === "event" && url.pathname === "/open";
-    const hosted = hostedOrigin && url.origin === hostedOrigin && url.pathname === "/game-time-controller/index.html";
+    const hosted = hostedOrigin && url.origin === hostedOrigin && ["/game-time/controller", "/game-time/controller/", "/game-time-controller/index.html"].includes(url.pathname);
     const eventId = url.searchParams.get("event");
     return (native || hosted) && validEventId(eventId) ? eventId : null;
   } catch {
@@ -12,3 +12,4 @@ function controllerEventFromLink(input, hostedOrigin) {
 }
 
 export { controllerEventFromLink };
+

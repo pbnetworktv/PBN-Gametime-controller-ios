@@ -163,6 +163,8 @@ test("denied location leaves the role unclaimed and gives a useful retry message
 
 test("Controller links accept the intended event and reject unrelated or malformed links", () => {
   assert.equal(controllerEventFromLink("pbngametimecontroller://event/open?event=match-1"), "match-1");
+  assert.equal(controllerEventFromLink("https://www.pbnetwork.tv/game-time/controller?event=match-1", "https://www.pbnetwork.tv"), "match-1");
+  assert.equal(controllerEventFromLink("https://other.example/game-time/controller?event=match-1", "https://www.pbnetwork.tv"), null);
   assert.equal(controllerEventFromLink("https://www.pbnetwork.tv/game-time-controller/index.html?event=match-1", "https://www.pbnetwork.tv"), "match-1");
   for (const link of ["https://other.example/game-time-controller/index.html?event=match-1", "pbngametimecontroller://staff/open?event=match-1", "pbngametimecontroller://event/open?event=../match"]) assert.equal(controllerEventFromLink(link, "https://www.pbnetwork.tv"), null);
 });
@@ -185,4 +187,41 @@ test("staff views escape names, preserve dated days and disable occupied roles",
   const managed = organizerStaffView({ view, fields: [], busy: false });
   assert.match(managed, /ENABLE STAFFING|SAVE STAFF SETTINGS/);
   assert.doesNotMatch(managed, /<img/);
+});
+
+
+
+test('commissioner imports a private tournament without publishing it', async t => {
+  const harness=await controllerHarness();t.after(harness.close);
+  harness.api.route('command-home');
+  const doc=harness.window.document;
+  assert.ok(doc.querySelector('a[href$="/game-time/app/scrimmages"]'));
+  assert.equal(doc.querySelector('[data-action="open-challenge"]'),null);
+  doc.querySelector('[data-action="open-new-event"]').click();
+  for(const [id,value] of Object.entries({newEventName:'Private Cup',eventStartDate:'2030-06-05',newEventStartTime:'09:00',newEventTeams:'Alpha\nBravo\nCharlie\nDelta',newEventField:'2'}))doc.getElementById(id).value=value;
+  const venue=doc.getElementById('eventVenue');venue.innerHTML='<option value="Home Field">Home Field</option>';venue.value='Home Field';
+  doc.querySelector('[data-action="create-local-event"]').click();await settle();
+  assert.equal(harness.api.state.event.visibility,'PRIVATE');assert.equal(harness.api.state.teams.length,4);
+  assert.equal(harness.api.state.schedule.length,6);assert.equal(harness.api.state.fields.length,2);
+  assert.equal(harness.requests.filter(r=>r.method==='POST' && /controller-events|controller-setups/.test(r.path)).length,0);
+});
+
+test('public listing is explicit and registered teams are reviewed before changing the draw',async t=>{
+ let published=0;
+ const harness=await controllerHarness(request=>{
+  if(request.path.endsWith('/events/shared-test/publish')){published++;return response({fieldId:'test-field'});}
+  if(request.path.endsWith('/community-events/shared-test/registrations'))return response({entries:[{kind:'TEAM',name:'Charlie'},{kind:'TEAM',name:'Delta'},{kind:'TEAM',name:'Echo'}]});
+ });t.after(harness.close);
+ const state=harness.local('shared-test');state.event.source='PBN';state.event.eventType='Paintball tournament';state.session.active=false;state.controller.activeMatch=null;
+ state.event.startDate='2030-06-05';state.event.startTime='09:00';state.scheduleDraft={days:1,start:'09:00',matchMinutes:20,restSlots:1,version:1};
+ harness.api.route('publishing');const doc=harness.window.document;
+ assert.equal(published,0);doc.querySelector('[data-action="publish-public-event"]').click();await settle();
+ assert.equal(published,1);assert.equal(state.event.publishedToGameTime,true);
+ harness.api.route('teams');doc.querySelector('[data-action="edit-tournament-draw"]').click();
+ doc.querySelector('[data-action="load-registered-teams"]').click();await settle();
+ assert.deepEqual(state.teams,['Alpha','Bravo']);assert.equal(doc.querySelector('#drawTeams').value,'Charlie\nDelta\nEcho');
+ doc.querySelector('[data-action="save-tournament-draw"]').click();await settle();
+ assert.deepEqual(Array.from(state.teams),['Charlie','Delta','Echo']);assert.equal(state.schedule.length,3);
+ assert.equal(state.scheduleDraft.published,false);
+ assert.deepEqual(harness.errors,[]);
 });

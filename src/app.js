@@ -14,6 +14,7 @@ import { controllerEventFromLink } from "./controller-handoff.js";
 import { staffJoinView, organizerStaffView } from "./companion-view.js";
 import { createOfficialSetup } from "./official-setup.js";
 import { companionHomeView } from "./companion-home.js";
+import { tournamentPairings, scheduleTournament } from "./tournament-schedule.js";
 import { completedMatches, nextEventMatch, eventStandings } from "./event-progress.js";
 
 (() => {
@@ -161,7 +162,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
   let remoteEventsError = "";
   let pendingEventId = null;
   let openingEventId = null;
-  let publishingEvent = false;
+  let publishingEvent = false, publishingListing = false;
   let staffManagement = null;
   let staffManagementBusy = false;
   let staffManagementError = "";
@@ -385,6 +386,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     }
     accountGeneration += 1;
     publishingEvent = false;
+    publishingListing = false;
     openingEventId = null;
     staffBusy = false;
     staffManagementBusy = false;
@@ -1107,7 +1109,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       { title: "Build schedule", detail: state.scheduleDraft.generated ? `${state.schedule.length} matches generated` : "Generate and review match times", route: state.scheduleDraft.generated ? "master-schedule" : "schedule-builder", done: state.scheduleDraft.generated },
       { title: "Fields & pits", detail: `${state.fields.length} fields configured`, route: "fields", done: state.fields.length >= 1 },
       { title: "Staff & broadcast", detail: state.staff.length > 0 && assignedStaff === state.staff.length ? "All roles assigned" : state.staff.length ? `${state.staff.length - assignedStaff} roles need attention` : "No staff assigned", route: "staff", done: state.staff.length > 0 && assignedStaff === state.staff.length },
-      { title: "GameTime connection", detail: state.event.source === "PBN" ? "Event code and shared score are ready" : "Save this event to GameTime", route: "publishing", done: state.event.source === "PBN" }
+      { title: "GameTime connection", detail: state.event.source === "PBN" ? "Event code and shared score are ready" : "Optional: publish for signups, or keep this tournament private", route: "publishing", done: state.event.source === "PBN" }
     ];
   }
   function menu(target, count, title, text) {
@@ -1239,6 +1241,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     const startTime = eventDates(state.event).startTime;
     const pointLimit = format === "Race-to" ? data.get("eventPointLimit") : "";
     const settings = { name, startDate, endDate, startTime, venue, format, pointLimit };
+    settings.fieldId = venueDirectory.find(field => field.name === venue)?.id || null;
     Object.assign(state.event, settings, { date: remoteEventDateLabel(settings) });
     if (state.event.source === "PBN") state.event.controllerSettings = { ...settings, updatedAt: now() };
     if (state.session?.eventId === state.event.id) Object.assign(state.session, { label: name, format, pointLimit });
@@ -1266,6 +1269,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       return `<h2>Constraints</h2><div class="field-grid">
       ${selectField("draftBreaks", "Required break", BREAK_OPTIONS, breakKind)}
       <div class="field"><label for="draftBreakTime">Break time</label><input id="draftBreakTime" name="draftBreakTime" type="time" value="${escapeHtml(savedBreak?.[2] || "12:00")}"></div>
+      ${selectField("draftBreakMinutes", "Break duration", Array.from({length:36},(_,i)=>[(i+1)*5,`${(i+1)*5} minutes`]), d.breakMinutes || 30)}
       ${selectField("draftRest", "Rest protection", numberOptions(0, 10, (n) => n === 0 ? "No minimum rest" : `Minimum ${n} match ${n === 1 ? "slot" : "slots"}`), d.restSlots ?? 1)}
     </div>`;
     }
@@ -1282,6 +1286,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     time.closest(".field").hidden = !show;
     time.disabled = !show;
     time.required = show;
+    const duration=$("#draftBreakMinutes");if(duration){duration.disabled=!show;duration.closest(".field").hidden=!show;}
   }
   function saveScheduleStep(form) {
     const data = new FormData(form);
@@ -1297,6 +1302,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       const time = data.get("draftBreakTime");
       draft.breaks = time ? `${kind} at ${time}` : kind;
       draft.restSlots = Number(data.get("draftRest"));
+      draft.breakMinutes = Number(data.get("draftBreakMinutes") || 30);
     }
     draft.updatedAt = now();
     if (state.event?.source === "PBN") {
@@ -1310,6 +1316,15 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     saveScheduleStep(form);
     const draft = state.scheduleDraft;
     if (draft.step === 4) {
+      if (state.event.matchTerms || state.event.coinChallenge) return toast("Agreed scrimmage and challenge schedules are managed in GameTime.");
+      if (state.session?.active || Object.keys(completedMatches(state.controller)).length) return toast("Finish or clear the active tournament before rebuilding its schedule.");
+      const fields = Array.from({length:draft.fields},(_,i)=>state.fields[i] || {id:`${state.event.id}-field-${i+1}`,name:`Field ${i+1}`,pitLeft:"Pit 1",pitRight:"Pit 2"});
+      let schedule;
+      try { schedule = scheduleTournament({pairs:state.schedule,fields,startDate:state.event.startDate,days:draft.days,start:draft.start,slotMinutes:draft.matchMinutes,restSlots:draft.restSlots ?? 1,breakAt:String(draft.breaks || "").match(/ at (\d{2}:\d{2})$/)?.[1] || "",breakMinutes:draft.breakMinutes || 30}); }
+      catch(error) { return toast(error.message); }
+      state.schedule=schedule;state.fields=fields;draft.published=false;
+      state.event.endDate=new Date(Date.parse(state.event.startDate+"T00:00:00Z")+(draft.days-1)*86400000).toISOString().slice(0,10);
+      state.event.date=remoteEventDateLabel(state.event);
       draft.generated = true;
       draft.version += 1;
       logAction("SCHEDULE_GENERATED", { version: draft.version });
@@ -1448,7 +1463,36 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     page(`${topbar("Playoffs")}<section class="card"><span class="eyebrow">PROJECTED · NOT OFFICIAL</span>${bracket}</section>`, "event-dashboard");
   }
   function renderTeams() {
-    page(`${topbar("Teams")}<div class="list">${state.teams.map((team, index) => `<div class="list-row"><strong>${index + 1}</strong><div><strong>${escapeHtml(team)}</strong><small>Assigned to ${escapeHtml(state.event.name)}</small></div></div>`).join("")}</div><p class="form-note">Manage GameTime team memberships from the GameTime app.</p>`, "event-dashboard");
+    const tournament=state.event.eventType!=="Paintball scrimmage" && !state.event.coinChallenge && !state.event.matchTerms;
+    page(`${topbar("Teams")}<div class="list">${state.teams.map((team,index)=>`<div class="list-row"><strong>${index+1}</strong><div><strong>${escapeHtml(team)}</strong></div></div>`).join("")}</div>${tournament ? '<button class="primary wide" data-action="edit-tournament-draw">EDIT TEAMS & MATCH DRAW</button>' : '<p class="form-note">Teams and rules are agreed in GameTime.</p>'}`, "event-dashboard");
+  }
+  function tournamentDrawLocked() { return state.session?.active || Object.keys(completedMatches(state.controller)).length || state.event.matchTerms || state.event.coinChallenge || state.event.eventType==="Paintball scrimmage"; }
+  function showTournamentDraw() {
+    if(tournamentDrawLocked())return toast("The draw is locked after play starts. Agreed scrimmage and challenge rules are managed in GameTime.");
+    modalBody.innerHTML=`<h2>Teams & match draw</h2><p>Review the list before rebuilding. Existing match scores must not be in progress.</p><div class="field"><label for="drawTeams">One team per line</label><textarea id="drawTeams" rows="8" maxlength="5184" required>${escapeHtml(state.teams.join("\n"))}</textarea></div>${selectField("drawFormat","Draw",[["ROUND_ROBIN","Round robin"],["OPENING_ROUND","Opening bracket pairs — list in match order"]],state.event.draw || "ROUND_ROBIN")}${state.event.source==="PBN"?'<button type="button" class="secondary wide" data-action="load-registered-teams">LOAD REGISTERED TEAMS FROM GAMETIME</button>':''}<p id="drawStatus" role="status"></p><button class="primary wide" type="button" data-action="save-tournament-draw">BUILD MATCH DRAW</button>`;
+    modalBody.dataset.drawEvent=state.activeEventId;modal.querySelector('.close').formNoValidate=true;modal.showModal();
+  }
+  async function loadRegisteredTeams() {
+    const id=state.activeEventId,generation=accountGeneration;
+    try {
+      const session=await readSecureSession();if(!hasMemberSession(session))throw Error("Sign in to load entries.");
+      const entries=await authRequest("/api/game-time/player/community-events/"+encodeURIComponent(id)+"/registrations",{},session.token);
+      if(generation!==accountGeneration || state.activeEventId!==id || !modal.open || modalBody.dataset.drawEvent!==id || !$("#drawTeams"))return;
+      const names=entries.entries.filter(entry=>entry.kind==="TEAM").map(entry=>entry.name);
+      if(!names.length)throw Error("No teams have registered yet. You can still paste your existing team list.");
+      $("#drawTeams").value=names.join("\n");$("#drawStatus").textContent=new Set(names.map(name=>name.toLowerCase())).size!==names.length ? "Some teams share a name. Distinguish them in this list before building." : `${names.length} registered teams loaded. Review them, then build the match draw.`;
+    }catch(error){if(generation===accountGeneration && state.activeEventId===id && $("#drawStatus"))$("#drawStatus").textContent=error.message;}
+  }
+  function saveTournamentDraw() {
+    if(tournamentDrawLocked() || modalBody.dataset.drawEvent!==state.activeEventId)return toast("This match draw is no longer editable.");
+    const teams=$("#drawTeams").value.split(/\r?\n/).map(team=>team.trim()).filter(Boolean),draw=$("#drawFormat").value,d=state.scheduleDraft;
+    try {
+      const schedule=scheduleTournament({pairs:tournamentPairings(teams,state.activeEventId,draw),fields:state.fields,startDate:state.event.startDate,days:d.days || 1,start:d.start || state.event.startTime,slotMinutes:d.matchMinutes || 20,restSlots:d.restSlots ?? 1,breakAt:String(d.breaks || "").match(/ at (\d{2}:\d{2})$/)?.[1] || "",breakMinutes:d.breakMinutes || 30});
+      state.teams=teams;state.schedule=schedule;state.event.draw=draw;state.controller=emptyControllerForEvent(state.activeEventId);state.standings=[];
+      state.divisions=state.divisions.map((division,i)=>i?division:{...division,teams:teams.length});
+      d.generated=true;d.published=false;d.version=(d.version || 1)+1;
+      logAction("TOURNAMENT_DRAW_UPDATED",{teams:teams.length,matches:schedule.length});modal.close();route("master-schedule");
+    }catch(error){$("#drawStatus").textContent=error.message;}
   }
   function renderDivisions() {
     page(`${topbar("Divisions")}<div class="list">${state.divisions.map((division) => `<div class="list-row"><div><strong>${escapeHtml(division.name)}</strong><small>${escapeHtml(division.teams)} teams - ${escapeHtml(division.format)}</small></div></div>`).join("")}</div>`, "event-dashboard");
@@ -1465,7 +1509,8 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     page(`${topbar("Activity Log")}<section class="card"><span class="eyebrow">APPEND-ONLY LOCAL AUDIT</span><div class="list">${log.length ? log.slice().reverse().map((a) => `<div class="list-row"><div><strong>${a.type.replaceAll("_", " ")}</strong><small>${new Date(a.at).toLocaleString()}</small></div><span class="status">${a.syncStatus}</span></div>`).join("") : `<div class="empty">Actions will appear here immediately, even offline.</div>`}</div></section>`, "event-dashboard");
   }
   function renderPublishing() {
-    page(`${topbar("GameTime connection")}<section class="card"><h2>${escapeHtml(state.event.name)}</h2>${state.event.source === "PBN" ? `<p>This event is connected to GameTime. Clock and score changes save automatically.</p>${eventCodeControl()}${connectionStatusButton()}<button class="primary wide" data-route="staff">SET UP EVENT STAFF</button><a class="companion-return" href="https://www.pbnetwork.tv/game-time">OPEN GAMETIME</a>` : `<p>This event is saved on this device.</p>${state.authMode === "member" ? `<button class="primary wide" data-action="publish-event"${publishingEvent ? " disabled" : ""}>${publishingEvent ? "SAVING." : "SAVE EVENT TO GAMETIME"}</button>` : ""}`}</section>`, "event-dashboard");
+    const tournament=state.event.eventType!=="Paintball scrimmage" && !state.event.coinChallenge;
+    page(`${topbar("GameTime connection")}<section class="card"><h2>${escapeHtml(state.event.name)}</h2><p>${state.event.publishedToGameTime ? "Published in GameTime. Players and teams can sign up from the event page." : "This tournament is private. Publishing makes it visible in PBN Events and next to its venue on the map."}</p>${state.event.source === "PBN" ? `${eventCodeControl()}${connectionStatusButton()}<button class="secondary wide" data-route="staff">EVENT STAFF</button>` : '<p>Your teams, rules and schedule are saved on this device. You can run the tournament without publishing.</p>'}${state.authMode === "member" && tournament ? `<button class="primary wide" data-action="publish-public-event"${publishingListing ? " disabled" : ""}>${publishingListing ? "PUBLISHING…" : state.event.publishedToGameTime ? "REFRESH PUBLIC LISTING" : "PUBLISH TO GAMETIME"}</button>${state.event.source !== "PBN" ? '<button class="secondary wide" data-action="publish-event">SAVE A PRIVATE SHARED COPY</button>' : ""}` : ""}</section>`, "event-dashboard");
   }
   function renderSettings() {
     page(`${topbar("Settings", "command-home")}<section class="card"><span class="eyebrow">ACCOUNT</span><h2>${escapeHtml(state.authMode === "member" ? state.member?.screenName || state.member?.email || "PBN Member" : "Offline practice")}</h2><p class="muted">${escapeHtml(state.member?.email || "Practice clock and scores stay on this device.")}</p>${state.authMode === "member" ? '<div class="button-row"><button class="secondary" data-action="sign-out">SIGN OUT</button><button class="danger" data-action="delete-account">DELETE ACCOUNT</button></div>' : ""}</section><section class="card"><span class="eyebrow">AUDIO</span><button type="button" class="secondary wide" data-action="test-announcements">TEST ANNOUNCEMENTS</button><p class="muted">Base, Point Approved, Point Reversed, No Points, Game Started and Game Stopped.</p>${selectField("countdownCue", "Countdown sound", [["field-reference-beep", "Field controller reference"], ["scoreboard-beep", "Sharp electronic scoreboard"], ["referee-timer-beep", "Clean referee timer"], ["tournament-beep", "Loud tournament start system"]], state.audio?.countdownCue)}</section><section class="card"><h2>GameTime connection</h2><p>Your PBN account connects automatically. Shared event scores are kept on this device until GameTime confirms each save.</p><button class="primary wide" data-action="retry-sync">CHECK CONNECTION</button><button class="secondary wide" data-action="export-log">EXPORT EVENT LOG</button></section>`, "settings");
@@ -1970,7 +2015,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
   }
   function showNewEventSetup() {
     const date = localDateValue();
-    modalBody.innerHTML = `<h2>Start New Event</h2><p class="muted">Choose the field, format and opening teams. Signed-in events save to GameTime and receive a shared event code.</p>
+    modalBody.innerHTML = `<h2>Start New Event</h2><p class="muted">Build your tournament privately. Add your existing teams, choose the rules and playing fields, then publish to GameTime only when you are ready.</p>
     ${state.session?.active ? `<p class="muted">Creating this event pauses and saves your current session so you can return to it.</p>` : ""}
     <div class="field-grid">
       <div class="field"><label for="newEventName">Event name</label><input id="newEventName" maxlength="100" required placeholder="Practice day or tournament name"></div>
@@ -1981,12 +2026,12 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       <div class="field" hidden><label for="customVenue">Venue name</label><input id="customVenue" maxlength="160" disabled></div>
       ${selectField("eventFormat", "Scoring preset", SCORING_PRESETS, "Race-to")}
       ${selectField("eventPointLimit", "Race-to points", numberOptions(1, 7, (n) => `${n} ${n === 1 ? "point" : "points"}`), 3)}
-      ${selectField("newEventDeck", "Deck style", [["single", "Single Deck (2 teams)"], ["split", "Split Deck (4 teams)"]], "single")}
-      ${selectField("newEventField", "Opening field", numberOptions(1, 32, (n) => `Field ${n}`), 1)}
+      ${selectField("newEventDeck", "Deck style", [["single", "Single deck"], ["split", "Split deck"]], "single")}
+      ${selectField("newEventField", "Number of playing fields", numberOptions(1, 32, (n) => `${n} fields`), 1)}
       <div class="field"><label for="newEventDivision">Opening division</label><input id="newEventDivision" value="Open" maxlength="60" required></div>
-      <div class="field"><label for="newEventLeft">Game 1 — left team</label><input id="newEventLeft" maxlength="24" required placeholder="Team 1"></div>
-      <div class="field"><label for="newEventRight">Game 1 — right team</label><input id="newEventRight" maxlength="24" required placeholder="Team 2"></div>
-      <div id="newEventSplitTeams" class="field-grid hidden"><div class="field"><label for="newEventNextLeft">Game 2 — left team</label><input id="newEventNextLeft" maxlength="24" required disabled placeholder="Team 3"></div><div class="field"><label for="newEventNextRight">Game 2 — right team</label><input id="newEventNextRight" maxlength="24" required disabled placeholder="Team 4"></div></div>
+      <div class="field setup-full"><label for="newEventTeams">Existing team list — one team per line</label><textarea id="newEventTeams" rows="6" maxlength="5184" required placeholder="Team 1&#10;Team 2&#10;Team 3"></textarea></div>
+      ${selectField("newEventDraw", "Match draw", [["ROUND_ROBIN", "Round robin — every team plays every other team"], ["OPENING_ROUND", "Opening pairs — list teams in bracket order"]], "ROUND_ROBIN")}
+      ${selectField("newEventSlot", "Minutes per match slot (including turnaround)", numberOptions(1, 180, n => `${n} minutes`), 20)}
     </div><div class="button-row"><button class="secondary" value="cancel" formnovalidate>CANCEL</button><button class="primary" type="button" data-action="create-local-event">CREATE EVENT</button></div>`;
     modal.querySelector(".close").formNoValidate = true;
     modal.showModal();
@@ -2003,15 +2048,21 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     const format = $("#eventFormat").value;
     const pointLimit = format === "Race-to" ? Number($("#eventPointLimit").value) : null;
     const deckStyle = $("#newEventDeck").value;
-    const fieldName = `Field ${$("#newEventField").value}`;
+    const fieldCount = Number($("#newEventField").value);
+    const fieldName = "Field 1";
     const divisionName = $("#newEventDivision").value.trim();
-    const teams = [$("#newEventLeft").value.trim(), $("#newEventRight").value.trim()];
-    if (deckStyle === "split") teams.push($("#newEventNextLeft").value.trim(), $("#newEventNextRight").value.trim());
-    if (!name || !venue || !divisionName || teams.some((team) => !team)) return toast("Enter an event name, venue, division, and each team name.");
+    const teams = $("#newEventTeams").value.split(/\r?\n/).map(name => name.trim()).filter(Boolean);
     const eventId = `local-event-${crypto.randomUUID()}`;
+    const fields = Array.from({length:fieldCount},(_,i)=>({id:`${eventId}-field-${i+1}`,name:`Field ${i+1}`,pitLeft:"Pit 1",pitRight:"Pit 2"}));
+    const slotMinutes = Number($("#newEventSlot").value), draw = $("#newEventDraw").value;
+    let schedule;
+    try { schedule = scheduleTournament({pairs:tournamentPairings(teams,eventId,draw),fields,startDate:date,start:startTime,slotMinutes,restSlots:1}); }
+    catch(error) { return toast(error.message); }
+    if (deckStyle === "split" && teams.length < 4) return toast("Split deck needs at least four teams.");
+    if (!name || !venue || !divisionName) return toast("Enter an event name, venue and division.");
     if (!parkActiveWorkspace()) return;
     state.activeEventId = eventId;
-    state.event = { id: eventId, source: "local", eventType: "Planned event", name, startDate: date, endDate: date, startTime, date: remoteEventDateLabel({ startDate: date, endDate: date, startTime }), venue, format, pointLimit, deckStyle, status: "Draft" };
+    state.event = { id: eventId, source: "local", eventType: "Paintball tournament", visibility: "PRIVATE", draw, name, startDate: date, endDate: date, startTime, date: remoteEventDateLabel({ startDate: date, endDate: date, startTime }), venue, format, pointLimit, deckStyle, status: "Draft" };
     state.sync = clone(defaultState.sync);
     state.event.fieldId = venueDirectory.find((field) => field.name === venue)?.id || null;
     state.league = { id: `${eventId}-league`, name: "GameTime event", season: date.slice(0, 4) };
@@ -2019,21 +2070,17 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     const fieldId = `${eventId}-field-1`;
     state.divisions = [{ id: divisionId, name: divisionName, teams: teams.length, format }];
     state.teams = teams;
-    state.fields = [{ id: fieldId, name: fieldName, pitLeft: "Pit 1", pitRight: "Pit 2" }];
+    state.fields = fields;
     state.staff = [];
     state.standings = [];
-    const [hours, minutes] = startTime.split(":").map(Number);
-    state.schedule = Array.from({ length: teams.length / 2 }, (_, index) => {
-      const slot = (hours * 60 + minutes + index * 20) % (24 * 60);
-      return { id: `${eventId}-match-${index + 1}`, eventId, divisionId, fieldId, time: `${String(Math.floor(slot / 60)).padStart(2, "0")}:${String(slot % 60).padStart(2, "0")}`, field: fieldName, left: teams[index * 2], right: teams[index * 2 + 1], status: index ? "Scheduled" : "On deck" };
-    });
+    state.schedule = schedule.map(match => ({...match,divisionId}));
     state.controller = emptyControllerForEvent(eventId);
-    state.scheduleDraft = { ...clone(defaultState.scheduleDraft), eventId, step: 1, days: 1, fields: 1, start: startTime, breaks: "", generated: true, published: false, version: 1 };
+    state.scheduleDraft = { ...clone(defaultState.scheduleDraft), eventId, step: 1, days: 1, fields: fieldCount, start: startTime, matchMinutes: slotMinutes, breaks: "", generated: true, published: false, version: 1 };
     state.session = { active: false, type: "event", eventId, label: name, format, pointLimit, deckStyle };
     logAction("LOCAL_EVENT_CREATED", { eventId, deckStyle, teams: teams.length, matches: state.schedule.length });
     modal.close();
     route("event-dashboard");
-    if (state.authMode === "member") void publishCurrentEvent();
+    // Private tournaments stay on the device until the commissioner explicitly connects or publishes.
   }
   function teamId(prefix) {
     return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
@@ -2128,6 +2175,23 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     logAction("NEXT_MATCH_OPENED", { matchId: active.id });
     route("live-controller");
   }
+  async function publishTournamentListing() {
+    if (publishingListing || state.authMode !== "member") return;
+    if (!state.event.fieldId) return toast("Choose a registered GameTime venue before publishing so players can find the event on the map.");
+    const generation=accountGeneration;
+    publishingListing=true;
+    try {
+      const id=state.event.source === "PBN" ? state.activeEventId : await publishCurrentEvent();
+      if (!id || generation!==accountGeneration || state.activeEventId!==id) return;
+      const session=await readSecureSession();
+      if (!hasMemberSession(session) || generation!==accountGeneration) return;
+      await authRequest("/api/game-time/player/events/"+encodeURIComponent(id)+"/publish",{method:"POST",body:"{}"},session.token);
+      if (generation!==accountGeneration || state.activeEventId!==id) return;
+      state.event.publishedToGameTime=true;logAction("EVENT_PUBLISHED_TO_GAMETIME");
+      toast("Published. Players and teams can find this event in GameTime and on the map.");
+    } catch(error) {if(generation===accountGeneration)toast(error.message || "Could not publish. Your private event is saved.");}
+    finally {if(generation===accountGeneration){publishingListing=false;save();render();}}
+  }
   async function publishCurrentEvent() {
     if (publishingEvent || state.authMode !== "member" || state.event?.source === "PBN") return;
     const localId = state.activeEventId, generation = accountGeneration;
@@ -2179,6 +2243,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       logAction("CREATED_EVENT_CONNECTED", { eventId: created.id });
       route(state.session.active && state.controller.activeMatch ? "live-controller" : "event-dashboard");
       toast("Event saved to GameTime. Your event code is ready.");
+      return created.id;
     } catch (error) {
       if (generation === accountGeneration) {
         if (error.status === 400 && !payload.createdId) delete state.pendingCreations[localId];
@@ -2236,6 +2301,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     accountGeneration += 1;
     staffAuthReady = false;
     publishingEvent = false;
+    publishingListing = false;
     openingEventId = null;
     staffLookup += 1;
     clearTimeout(syncTimer);
@@ -2374,6 +2440,10 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       void activateRemoteEvent(selected);
     } else if (action === "refresh-events") void refreshRemoteEvents();
     else if (action === "publish-event") void publishCurrentEvent();
+    else if (action === "publish-public-event") void publishTournamentListing();
+    else if (action === "edit-tournament-draw") showTournamentDraw();
+    else if (action === "load-registered-teams") void loadRegisteredTeams();
+    else if (action === "save-tournament-draw") saveTournamentDraw();
     else if (action === "retry-sync") void retryControllerSync();
     else if (action === "review-sync") void reviewSyncConflict();
     else if (action === "use-server-score") resolveSyncConflict(false);
@@ -2396,11 +2466,11 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     else if (action === "sign-out") signOut();
     else if (action === "delete-account") confirmAccountDeletion();
     else if (action === "confirm-delete-account") deleteAccount();
-    else if (action === "open-scrimmage") state.authMode === "member" ? void officialSetup.show("SCRIMMAGE") : showScrimmageSetup(true);
+    else if (action === "open-scrimmage") window.open(authApiOrigin() + "/game-time/app/scrimmages", "_blank");
     else if (action === "open-practice") showScrimmageSetup(true);
-    else if (action === "open-challenge") void officialSetup.show("CHALLENGE");
+    else if (action === "open-challenge") window.open(authApiOrigin() + "/game-time/app/challenges", "_blank");
     else if (action === "start-scrimmage") startScrimmage();
-    else if (action === "open-new-event") state.authMode === "member" ? void officialSetup.show("TOURNAMENT") : showNewEventSetup();
+    else if (action === "open-new-event") showNewEventSetup();
     else if (action === "create-local-event") createLocalEvent();
     else if (action === "resume-saved-session") resumeSavedSession(button.dataset.eventId);
     else if (action === "run-event") runEvent();
@@ -2551,3 +2621,4 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
   } else if (isHostedController()) openStaffInvite(window.location.href);
   restoreAuthSession();
 })();
+
