@@ -90,7 +90,7 @@ test("application exposes all first-iteration routes", () => {
 });
 
 test("home exposes distinct GameTime setup and a guided event readiness path", () => {
-  assert.match(home, /CREATE SCRIMMAGE/);
+  assert.match(home, /SCRIMMAGES IN GAMETIME/);
   assert.match(home, /CREATE TOURNAMENT/);
   assert.match(app, /CONTINUE WHERE I LEFT OFF/);
   assert.match(app, /function eventSetupSteps/);
@@ -155,3 +155,4 @@ test("shared PBN events use their unique event ID and never inherit demo teams",
   assert.match(app, /if \(!state\.schedule\.length\) return toast\("Add teams and build a schedule before running this event\."\)/);
   assert.match(app, /eventId: state\.activeEventId \|\| state\.event\?\.id \|\| null/);
 });
+
