@@ -163,6 +163,8 @@ test("denied location leaves the role unclaimed and gives a useful retry message
 
 test("Controller links accept the intended event and reject unrelated or malformed links", () => {
   assert.equal(controllerEventFromLink("pbngametimecontroller://event/open?event=match-1"), "match-1");
+  assert.equal(controllerEventFromLink("https://www.pbnetwork.tv/game-time/controller?event=match-1", "https://www.pbnetwork.tv"), "match-1");
+  assert.equal(controllerEventFromLink("https://other.example/game-time/controller?event=match-1", "https://www.pbnetwork.tv"), null);
   assert.equal(controllerEventFromLink("https://www.pbnetwork.tv/game-time-controller/index.html?event=match-1", "https://www.pbnetwork.tv"), "match-1");
   for (const link of ["https://other.example/game-time-controller/index.html?event=match-1", "pbngametimecontroller://staff/open?event=match-1", "pbngametimecontroller://event/open?event=../match"]) assert.equal(controllerEventFromLink(link, "https://www.pbnetwork.tv"), null);
 });
@@ -186,3 +188,4 @@ test("staff views escape names, preserve dated days and disable occupied roles",
   assert.match(managed, /ENABLE STAFFING|SAVE STAFF SETTINGS/);
   assert.doesNotMatch(managed, /<img/);
 });
+

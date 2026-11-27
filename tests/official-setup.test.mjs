@@ -74,3 +74,46 @@ test('a late setup reply never crosses an account change', async t => {
   harness.api.selectMemberWorkspace({ id: 'other-account' }); pending.resolve(response(result('SCRIMMAGE', 'old-id'), 201)); await settle();
   assert.equal(harness.window.document.querySelector('#modal').open, false); assert.equal(harness.api.state.ownerUserId, 'other-account'); assert.equal(harness.api.state.officialSetupPending, null); assert.equal(harness.api.state.remoteSetups.length, 0); assert.equal(harness.window.document.body.textContent.includes('SAVED IN GAMETIME'), false);
 });
+
+
+test('quick scrimmage preserves edited secondary rules through a match format change', async t => {
+  let command;
+  const harness = await controllerHarness(request => {
+    if (request.path.endsWith('/controller-setups/context')) return response(context);
+    if (request.path.endsWith('/controller-setups') && request.method === 'POST') { command = request.body; return response(result('SCRIMMAGE', request.body.requestId), 201); }
+  }); t.after(harness.close);
+  await harness.api.officialSetup.show('SCRIMMAGE'); values(harness.window);
+  const doc = harness.window.document, settings = doc.querySelector('[data-setup-settings]');
+  assert.equal(settings.open, false);
+  assert.equal(doc.querySelector('#setup-teamId').closest('details'), null);
+  assert.equal(doc.querySelector('#setup-raceTo').closest('details'), null);
+  assert.equal(doc.querySelector('#setup-breakSeconds').closest('details'), settings);
+  settings.open = true;
+  fill(harness.window, '#setup-breakSeconds', '60', true);
+  fill(harness.window, '#setup-equipment', 'Mech', true);
+  fill(harness.window, '#setup-mode', 'TIMED', true);
+  assert.equal(doc.querySelector('[data-setup-settings]').open, true);
+  assert.equal(doc.querySelector('#setup-breakSeconds').value, '60');
+  fill(harness.window, '#setup-matchMinutes', '15');
+  click(harness.window, '[data-setup-action="save"]'); await settle();
+  assert.equal(command.terms.breakSeconds, 60); assert.equal(command.terms.equipment, 'Mech');
+  assert.equal(command.terms.matchMinutes, 15); assert.equal(command.terms.raceTo, null);
+});
+
+test('quick tournament shows visibility and aligns the same-day end date', async t => {
+  let command;
+  const harness = await controllerHarness(request => {
+    if (request.path.endsWith('/controller-setups/context')) return response(context);
+    if (request.path.endsWith('/controller-setups') && request.method === 'POST') { command = request.body; return response(result('TOURNAMENT', request.body.requestId, true), 201); }
+  }); t.after(harness.close);
+  await harness.api.officialSetup.show('TOURNAMENT');
+  const doc = harness.window.document;
+  assert.match(doc.querySelector('summary').textContent, /Public/);
+  fill(harness.window, '#setup-date', '2030-06-05', true);
+  assert.equal(doc.querySelector('#setup-endDate').value, '2030-06-05');
+  fill(harness.window, '#setup-date', '2030-06-04', true);
+  assert.equal(doc.querySelector('#setup-endDate').value, '2030-06-04');
+  fill(harness.window, '#setup-fieldId', 'field-1');fill(harness.window, '#setup-name', 'Summer Cup');fill(harness.window, '#setup-teams', 'Alpha\nBravo');
+  click(harness.window, '[data-setup-action="save"]');await settle();
+  assert.equal(command.endDate, command.date);assert.equal(command.visibility, 'PUBLIC');
+});
