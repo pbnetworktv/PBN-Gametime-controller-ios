@@ -1,3 +1,4 @@
+import {mountNdaGate} from "./nda-ui.js";
 import { App } from "@capacitor/app";
 import { Capacitor, CapacitorHttp } from "@capacitor/core";
 import { PBNControllerAudio } from "@pbnetwork/controller-audio";
@@ -34,6 +35,24 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
   const BREAK_OPTIONS = [["", "No required break"], ["Lunch", "Lunch break"], ["Field maintenance", "Field maintenance"], ["Scheduled break", "Scheduled break"]];
   const $ = (selector) => document.querySelector(selector);
   const app = $("#app");
+  let ndaApproved=false,ndaGatePromise=null,ndaDestroy=null;
+  async function ensureControllerNda(){
+    if(ndaGatePromise)return ndaGatePromise;
+    ndaApproved=false;staffAuthReady=false;
+    if(modal.open)modal.close();
+    ndaGatePromise=(async()=>{
+     const session=await readSecureSession();
+     return new Promise(resolve=>{
+      ndaDestroy=mountNdaGate(app,{
+        request:(path,options)=>authRequest(path,options,session?.token),
+        onAccepted:()=>{ndaApproved=true;ndaDestroy?.();ndaDestroy=null;ndaGatePromise=null;resolve(true);},
+        onDeclined:async()=>{ndaDestroy?.();ndaDestroy=null;ndaGatePromise=null;await signOut();resolve(false);}
+      });
+     });
+    })();
+    return ndaGatePromise;
+  }
+  window.addEventListener("pbn:nda-required",()=>{if(state.authenticated&&!ndaGatePromise)void ensureControllerNda().then(ok=>{if(ok){staffAuthReady=true;render();void refreshRemoteEvents();}});});
   const modal = $("#modal");
   const modalBody = $("#modalBody");
   const now = () => (new Date()).toISOString();
@@ -463,6 +482,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     state.member = session.user;
     state.operator = { name: session.user.screenName || session.user.firstName || session.user.email, role: "PBN Member" };
     state.route = "command-home";
+    if(!await ensureControllerNda())return;
     await loadRemoteEvents(session.token);
     staffAuthReady = true;
     void loadStaffMine();
@@ -551,6 +571,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       state.member = saved.user;
       state.operator = { name: saved.user.screenName || saved.user.email, role: "PBN Member" };
       if (state.route === "login") state.route = "command-home";
+      if(!await ensureControllerNda())return;
       await loadRemoteEvents(null);
       staffAuthReady = true;
       void loadStaffMine();
@@ -585,7 +606,8 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
       state.member = session.user;
       state.operator = { name: session.user.screenName || session.user.firstName || session.user.email, role: "PBN Member" };
       if (state.route === "login") state.route = "command-home";
-      await loadRemoteEvents(session.token);
+      if(!await ensureControllerNda())return;
+    await loadRemoteEvents(session.token);
       save();
     } catch (error) {
       if (error.status === 401 && error.code === "SESSION_ENDED") {
@@ -604,6 +626,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
         save();
       }
     }
+    if(state.authenticated&&!ndaApproved&&!await ensureControllerNda())return;
     staffAuthReady = true;
     void loadStaffMine();
     if (!resumeStaffInvite()) {
@@ -684,6 +707,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     return `<header class="topbar"><button class="icon-btn" data-route="${back}" aria-label="Back">&#8592;</button><h1>${escapeHtml(title)}</h1>${connectionStatusButton()}</header>`;
   }
   function page(content, active, className = "") {
+    if(state.authenticated&&!ndaApproved){if(!ndaGatePromise)void ensureControllerNda().then(ok=>{if(ok)render();});return;}
     app.innerHTML = `<div class="app-shell"><section class="screen ${className}">${className.includes("arena-screen") ? "" : connectionNotice()}${content}</section>${active ? nav(active) : ""}</div>`;
   }
   const pageDefinitions = {
@@ -708,6 +732,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     "settings": renderSettings
   };
   function render() {
+    if(state.authenticated&&!ndaApproved){if(!ndaGatePromise)void ensureControllerNda().then(ok=>{if(ok)render();});return;}
     (pageDefinitions[state.route] || renderLogin)();
   }
   function renderLogin() {
@@ -2296,6 +2321,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     authBusy = false;
   }
   async function signOut() {
+    ndaApproved=false;
     if (!parkActiveWorkspace()) return;
     save();
     accountGeneration += 1;
@@ -2418,6 +2444,8 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     else route("event-dashboard");
   }
   document.addEventListener("click", (event) => {
+    if(event.target.closest(".pbn-nda"))return;
+    if(state.authenticated&&!ndaApproved)return;
     const button = event.target.closest("button");
     if (!button || button.disabled) return;
     if (button.dataset.route) return route(button.dataset.route);
@@ -2427,6 +2455,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
     }
     const action = button.dataset.action;
     if (action === "demo-login") {
+      if(!ndaApproved){toast("Sign in and complete the NDA to use Controller.");return;}
       state.authenticated = true;
       state.authMode = "demo";
       logAction("OFFLINE_DEMO_STARTED");
@@ -2582,6 +2611,7 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
   });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) {
+      if(state.authenticated){void ensureControllerNda().then(ok=>{if(ok){staffAuthReady=true;render();void refreshRemoteEvents();}});return;}
       void refreshRemoteEvents();
       void loadStaffMine();
       queueControllerSync();
@@ -2621,4 +2651,5 @@ import { completedMatches, nextEventMatch, eventStandings } from "./event-progre
   } else if (isHostedController()) openStaffInvite(window.location.href);
   restoreAuthSession();
 })();
+
 

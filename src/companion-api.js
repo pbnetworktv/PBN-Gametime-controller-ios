@@ -41,6 +41,7 @@ function createPbnRequest({ origin, nativeHttp, fetcher = (...args) => fetch(...
     }
     if (status < 200 || status >= 300 || !payload || !Object.prototype.hasOwnProperty.call(payload, "data")) {
       const error = new Error(payload?.error || payload?.message || "PBN could not complete that request. Please retry.");
+      if(status===428&&typeof window!=="undefined")window.dispatchEvent(new Event("pbn:nda-required"));
       error.status = status;
       error.code = payload?.code;
       throw error;
