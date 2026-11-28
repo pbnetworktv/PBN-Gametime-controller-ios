@@ -32,7 +32,7 @@ export const settle = async () => { for (let index = 0; index < 15; index++) awa
 export const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 export const response = (data, status = 200) => ({ status, data: JSON.stringify({ data }) });
 
-export async function controllerHarness(handler = () => undefined) {
+export async function controllerHarness(handler = () => undefined, {waitForReady=true} = {}) {
   const errors = [];
   const console = new VirtualConsole();
   console.on("jsdomError", error => errors.push(error.message));
@@ -54,6 +54,7 @@ export async function controllerHarness(handler = () => undefined) {
       requests.push(request);
       const answer = await handler(request);
       if (answer) return answer;
+      if(request.path.endsWith("/nda"))return response({receipt:{id:"synthetic-test-signature"}});
       if (request.path === "/api/mobile-auth/me") return response({ user: window.__qa.session.user });
       if (request.path.endsWith("/controller-setups")) return response({items:[]});
       if (request.path.endsWith("/controller-events")) return response([]);
@@ -63,7 +64,7 @@ export async function controllerHarness(handler = () => undefined) {
   };
   window.eval(compiled.outputFiles[0].text);
   const api = window.__controller;
-  await api.ready(); await settle();
+  const ready=api.ready(); if(waitForReady)await ready; await settle();
   const local = (id = "local-scrimmage-test") => {
     const state = api.state;
     state.activeEventId = id;
@@ -80,5 +81,5 @@ export async function controllerHarness(handler = () => undefined) {
     api.save();
     return state;
   };
-  return { api, window, requests, locationRequests, errors, local, close: () => dom.window.close() };
+  return { api, window, ready, requests, locationRequests, errors, local, close: () => dom.window.close() };
 }

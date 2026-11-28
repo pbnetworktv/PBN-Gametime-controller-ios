@@ -225,3 +225,15 @@ test('public listing is explicit and registered teams are reviewed before changi
  assert.equal(state.scheduleDraft.published,false);
  assert.deepEqual(harness.errors,[]);
 });
+
+
+test('saved Controller accounts cannot load matches or resume a deep link before signing',async t=>{
+ const h=await controllerHarness(req=>req.path.endsWith('/nda')?response({version:'1.0',hash:'fixture',document:'# Test NDA\nComplete test agreement.',acknowledgement:'I agree.',guardianRequired:false,receipt:null}):undefined,{waitForReady:false});t.after(h.close);
+ assert.match(h.window.document.body.textContent,/Before you enter Game Time/);
+ assert.equal(h.requests.filter(r=>r.path.endsWith('/controller-events')||r.path.endsWith('/staff/mine')).length,0);
+ h.api.route('live-controller');await settle();
+ assert.match(h.window.document.body.textContent,/Sign NDA & Continue/);
+ assert.ok(!h.window.document.querySelector('[data-action="start-game"]'));
+ const buttons=[...h.window.document.querySelectorAll('button')];buttons.find(b=>b.textContent==='Decline & sign out').click();await settle();
+ assert.match(h.window.document.body.textContent,/SIGN IN TO YOUR ACCOUNT/);
+});
